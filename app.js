@@ -219,6 +219,12 @@ let mainBtnHandler = null;
 function initTelegram() {
   if (!TG) return;
   try {
+    /* В обычном браузере platform равен 'unknown': системной кнопки нет,
+       и внутренние кнопки «Сохранить» остаются видимыми.
+       В Telegram помечаем страницу классом, чтобы скрыть дубль кнопки. */
+    if (TG.platform && TG.platform !== 'unknown') {
+      document.body.classList.add('tg');
+    }
     TG.ready();
     TG.expand();
     try {
@@ -1322,6 +1328,20 @@ async function refreshRatesManual() {
    ============================================================ */
 
 function bindEvents() {
+
+  /* --- Блокировка горизонтального сдвига страницы (iOS/Telegram):
+         если палец тянет вбок сильнее, чем по вертикали, жест отменяется.
+         Вертикальная прокрутка списков и шторок работает как раньше --- */
+  let touchX = 0, touchY = 0;
+  document.addEventListener('touchstart', e => {
+    touchX = e.touches[0].clientX;
+    touchY = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchmove', e => {
+    const dx = Math.abs(e.touches[0].clientX - touchX);
+    const dy = Math.abs(e.touches[0].clientY - touchY);
+    if (dx > dy && dx > 6) e.preventDefault();
+  }, { passive: false });
 
   /* --- Навигация --- */
   document.querySelectorAll('.tabbar .tab').forEach(t =>
