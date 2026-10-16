@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Финансы</title>
+  <!-- Шрифт Manrope с поддержкой кириллицы -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;800&display=swap" rel="stylesheet">
+  <!-- Стили приложения -->
+  <link rel="stylesheet" href="style.css">
+  <!-- Telegram Web App API (в браузере просто не сработает — это нормально) -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- Chart.js для графиков статистики -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div id="app">
+
+    <!-- ====================== ЭКРАН: ГЛАВНАЯ ====================== -->
+    <section class="screen active" id="screen-home">
+      <div class="screen-head">
+        <h1>Баланс</h1>
+        <button class="icon-btn" id="btn-home-settings" aria-label="Настройки">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M19.4 4.6l-2.1 2.1M6.7 17.3l-2.1 2.1"/></svg>
+        </button>
+      </div>
+
+      <!-- Напоминание про экспорт (показывается до первого экспорта) -->
+      <div class="banner hidden" id="export-banner">
+        <div class="banner-text">Данные хранятся только в этом браузере. Делайте экспорт в файл хотя бы раз в неделю — это единственная резервная копия.</div>
+        <div class="banner-actions">
+          <button class="mini-btn accent" id="banner-export-btn">Экспортировать</button>
+          <button class="mini-btn" id="banner-ok-btn">Понятно</button>
+        </div>
+      </div>
+
+      <div class="total-card">
+        <div class="total-value" id="home-total">0 ₽</div>
+        <div class="total-breakdown">
+          <div class="tb-row"><span>Личные</span><b id="home-personal">0 ₽</b></div>
+          <div class="tb-row"><span>Корпоративный</span><b id="home-business">0 ₽</b></div>
+          <div class="tb-row"><span>Крипта</span><b id="home-crypto">0 ₽</b></div>
+        </div>
+      </div>
+
+      <div class="month-card">
+        <div class="mc-col"><span>Доходы за месяц</span><b id="home-inc" class="pos">0 ₽</b></div>
+        <div class="mc-col"><span>Расходы за месяц</span><b id="home-exp">0 ₽</b></div>
+      </div>
+
+      <div class="rates-line">
+        <span id="home-rates-line">Котировки ещё не получены</span>
+        <button class="mini-btn" id="btn-refresh-rates">Обновить</button>
+      </div>
+
+      <h2>Последние операции</h2>
+      <div id="home-last-ops" class="ops-list"></div>
+    </section>
+
+    <!-- ====================== ЭКРАН: ИСТОРИЯ ====================== -->
+    <section class="screen" id="screen-history">
+      <div class="screen-head">
+        <h1>История</h1>
+        <button class="icon-btn" id="btn-hist-add" aria-label="Добавить операцию">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+
+      <div class="hist-controls">
+        <div class="seg grow" id="hist-scope">
+          <button class="seg-btn active" data-scope="personal">Личные</button>
+          <button class="seg-btn" data-scope="business">Корпоративный</button>
+        </div>
+      </div>
+
+      <div class="hist-controls">
+        <select id="hist-month" class="grow"></select>
+      </div>
+
+      <div class="balance-strip"><span>Баланс счёта</span><b id="hist-balance">0 ₽</b></div>
+
+      <div id="hist-list" class="ops-list"></div>
+    </section>
+
+    <!-- ====================== ЭКРАН: КРИПТА ====================== -->
+    <section class="screen" id="screen-crypto">
+      <div class="screen-head">
+        <h1>Крипта</h1>
+        <div class="head-actions">
+          <button class="icon-btn" id="btn-crypto-op" aria-label="Добавить операцию">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <button class="icon-btn" id="btn-crypto-assets" aria-label="Управление активами">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M19.4 4.6l-2.1 2.1M6.7 17.3l-2.1 2.1"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="total-card">
+        <div class="total-value" id="crypto-total-usd">$0</div>
+        <div class="total-sub" id="crypto-total-rub">0 ₽</div>
+      </div>
+
+      <div class="rates-line">
+        <span id="crypto-rates-line">Котировки ещё не получены</span>
+        <button class="mini-btn" id="btn-refresh-rates-2">Обновить</button>
+      </div>
+
+      <h2>Активы</h2>
+      <div id="crypto-assets"></div>
+
+      <h2>История операций</h2>
+      <div id="crypto-ops" class="ops-list"></div>
+    </section>
+
+    <!-- ====================== ЭКРАН: СТАТИСТИКА ====================== -->
+    <section class="screen" id="screen-stats">
+      <div class="screen-head">
+        <h1>Статистика</h1>
+      </div>
+
+      <div class="hist-controls">
+        <div class="seg grow" id="stat-scope">
+          <button class="seg-btn active" data-scope="personal">Личные</button>
+          <button class="seg-btn" data-scope="business">Корпоративный</button>
+        </div>
+      </div>
+      <div class="hist-controls">
+        <div class="seg grow" id="stat-period">
+          <button class="seg-btn active" data-period="month">Месяц</button>
+          <button class="seg-btn" data-period="3m">3 мес</button>
+          <button class="seg-btn" data-period="year">Год</button>
+          <button class="seg-btn" data-period="all">Всё</button>
+        </div>
+      </div>
+
+      <div class="chart-box">
+        <h3>Расходы по категориям</h3>
+        <div class="chart-wrap"><canvas id="chart-doughnut"></canvas></div>
+        <div class="chart-empty hidden" id="doughnut-empty">Нет расходов за выбранный период</div>
+      </div>
+
+      <div class="chart-box">
+        <h3>Доходы и расходы по месяцам</h3>
+        <div class="chart-wrap tall"><canvas id="chart-months"></canvas></div>
+        <div class="chart-empty hidden" id="months-empty">Нет данных за выбранный период</div>
+      </div>
+
+      <div class="set-card">
+        <h3>Топ-5 категорий по тратам</h3>
+        <div id="stat-top"></div>
+      </div>
+
+      <div class="set-card">
+        <h3>Крипто-портфель</h3>
+        <div id="stat-crypto"></div>
+      </div>
+    </section>
+
+    <!-- ====================== ЭКРАН: НАСТРОЙКИ ====================== -->
+    <section class="screen" id="screen-settings">
+      <div class="screen-head">
+        <h1>Настройки</h1>
+      </div>
+
+      <div class="set-card">
+        <h3>Резервная копия</h3>
+        <p class="hint">Данные живут только в этом браузере. Экспортируйте файл хотя бы раз в неделю и храните его в надёжном месте.</p>
+        <button class="btn-primary" id="btn-export">Экспортировать все данные</button>
+        <div class="hint center" id="last-export">Экспорт ещё не делался</div>
+        <button class="btn-secondary" id="btn-import">Импортировать из файла</button>
+        <input type="file" id="import-file" accept=".json,application/json" class="visually-hidden">
+      </div>
+
+      <div class="set-card">
+        <div class="card-head">
+          <h3>Категории: личные</h3>
+          <button class="mini-btn" id="btn-add-cat-personal">Добавить</button>
+        </div>
+        <div id="cats-personal"></div>
+      </div>
+
+      <div class="set-card">
+        <div class="card-head">
+          <h3>Категории: корпоративные</h3>
+          <button class="mini-btn" id="btn-add-cat-business">Добавить</button>
+        </div>
+        <div id="cats-business"></div>
+      </div>
+
+      <div class="set-card">
+        <div class="card-head">
+          <h3>Крипто-активы</h3>
+          <button class="mini-btn" id="btn-add-asset">Добавить</button>
+        </div>
+        <p class="hint">Новый токен добавляется по идентификатору CoinGecko (например, <code>bitcoin</code>). Узнать его можно на странице токена на coingecko.com.</p>
+        <div id="assets-settings"></div>
+      </div>
+
+      <div class="set-card">
+        <h3>Опасная зона</h3>
+        <button class="btn-danger" id="btn-wipe">Стереть все данные</button>
+      </div>
+    </section>
+
+    <!-- ====================== НИЖНЯЯ НАВИГАЦИЯ ====================== -->
+    <nav class="tabbar">
+      <button class="tab active" data-screen="screen-home">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+        <span>Главная</span>
+      </button>
+      <button class="tab" data-screen="screen-history">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>
+        <span>История</span>
+      </button>
+      <button class="tab" data-screen="screen-crypto">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg>
+        <span>Крипта</span>
+      </button>
+      <button class="tab" data-screen="screen-stats">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 20v-9M12 20V4M19 20v-6"/></svg>
+        <span>Статистика</span>
+      </button>
+      <button class="tab" data-screen="screen-settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M19.4 4.6l-2.1 2.1M6.7 17.3l-2.1 2.1"/></svg>
+        <span>Ещё</span>
+      </button>
+    </nav>
+
+    <!-- Плавающая кнопка добавления -->
+    <button id="fab" aria-label="Добавить операцию">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+
+    <!-- ====================== МОДАЛКА: ОПЕРАЦИЯ (ЛИЧНЫЕ / КОРПОРАТИВНЫЕ) ====================== -->
+    <div class="modal" id="modal-op">
+      <div class="modal-sheet">
+        <div class="modal-head">
+          <h2 id="op-title">Новая операция</h2>
+          <button class="icon-btn modal-close" data-close="modal-op" aria-label="Закрыть">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+
+        <div class="seg" id="op-scope">
+          <button class="seg-btn active" data-scope="personal">Личные</button>
+          <button class="seg-btn" data-scope="business">Корпоративный</button>
+        </div>
+
+        <div class="seg" id="op-type">
+          <button class="seg-btn active neg" data-type="expense">Расход</button>
+          <button class="seg-btn" data-type="income">Доход</button>
+        </div>
+
+        <div class="amount-display" id="op-amount-display">0</div>
+
+        <div class="chips" id="op-cats"></div>
+
+        <div class="field-row">
+          <label for="op-date">Дата и время</label>
+          <input type="datetime-local" id="op-date">
+        </div>
+
+        <input type="text" id="op-comment" class="text-input" placeholder="Комментарий (необязательно)" maxlength="200">
+
+        <div class="keypad" id="op-keypad"></div>
+
+        <div class="modal-actions">
+          <button class="btn-danger hidden" id="op-delete">Удалить операцию</button>
+          <button class="btn-primary" id="op-save">Сохранить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====================== МОДАЛКА: КРИПТО-ОПЕРАЦИЯ ====================== -->
+    <div class="modal" id="modal-crypto">
+      <div class="modal-sheet">
+        <div class="modal-head">
+          <h2 id="cr-title">Новая крипто-операция</h2>
+          <button class="icon-btn modal-close" data-close="modal-crypto" aria-label="Закрыть">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+
+        <div class="chips" id="cr-assets"></div>
+
+        <div class="seg" id="cr-type">
+          <button class="seg-btn active pos" data-type="add">Добавил</button>
+          <button class="seg-btn" data-type="remove">Списал</button>
+        </div>
+
+        <div class="amount-display" id="cr-amount-display">0</div>
+        <div class="price-hint" id="cr-price-hint"></div>
+
+        <div class="field-row">
+          <label for="cr-date">Дата и время</label>
+          <input type="datetime-local" id="cr-date">
+        </div>
+
+        <input type="text" id="cr-comment" class="text-input" placeholder="Комментарий (необязательно)" maxlength="200">
+
+        <div class="keypad" id="cr-keypad"></div>
+
+        <div class="modal-actions">
+          <button class="btn-danger hidden" id="cr-delete">Удалить операцию</button>
+          <button class="btn-primary" id="cr-save">Сохранить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====================== МОДАЛКА: КАТЕГОРИЯ ====================== -->
+    <div class="modal" id="modal-cat">
+      <div class="modal-sheet">
+        <div class="modal-head">
+          <h2 id="cat-title">Новая категория</h2>
+          <button class="icon-btn modal-close" data-close="modal-cat" aria-label="Закрыть">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+
+        <div class="field-row">
+          <label for="cat-emoji">Иконка (эмодзи)</label>
+          <input type="text" id="cat-emoji" class="text-input emoji-input" maxlength="4">
+          <div class="chips" id="cat-emoji-presets"></div>
+        </div>
+
+        <div class="field-row">
+          <label for="cat-name">Название</label>
+          <input type="text" id="cat-name" class="text-input" placeholder="Например, Кофе" maxlength="30">
+        </div>
+
+        <div class="field-row">
+          <label for="cat-type">Тип</label>
+          <select id="cat-type">
+            <option value="expense">Расход</option>
+            <option value="income">Доход</option>
+            <option value="both">Расход и доход</option>
+          </select>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn-danger hidden" id="cat-delete">Удалить категорию</button>
+          <button class="btn-primary" id="cat-save">Сохранить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====================== МОДАЛКА: КРИПТО-АКТИВ ====================== -->
+    <div class="modal" id="modal-asset">
+      <div class="modal-sheet">
+        <div class="modal-head">
+          <h2 id="as-title">Новый актив</h2>
+          <button class="icon-btn modal-close" data-close="modal-asset" aria-label="Закрыть">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+
+        <div class="field-row">
+          <label for="as-emoji">Иконка (эмодзи)</label>
+          <input type="text" id="as-emoji" class="text-input emoji-input" maxlength="4">
+        </div>
+
+        <div class="field-row">
+          <label for="as-symbol">Тикер (например BTC)</label>
+          <input type="text" id="as-symbol" class="text-input" maxlength="10">
+        </div>
+
+        <div class="field-row">
+          <label for="as-name">Название</label>
+          <input type="text" id="as-name" class="text-input" maxlength="30">
+        </div>
+
+        <div class="field-row">
+          <label for="as-id">Идентификатор CoinGecko</label>
+          <input type="text" id="as-id" class="text-input" placeholder="например bitcoin" maxlength="40">
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn-danger hidden" id="as-delete">Удалить актив</button>
+          <button class="btn-primary" id="as-save">Сохранить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Всплывающие уведомления -->
+    <div id="toast" class="toast"></div>
+  </div>
+
+  <!-- Код приложения: сначала котировки, потом логика -->
+  <script src="api.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

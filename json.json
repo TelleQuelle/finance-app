@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "settings": {
+    "exportReminderShown": false,
+    "lastExportAt": "2026-10-16T23:40"
+  },
+  "categories": {
+    "personal": [
+      { "id": "p_food", "name": "Еда", "emoji": "🍔", "type": "expense" }
+    ],
+    "business": [
+      { "id": "b_income", "name": "Выручка", "emoji": "🤝", "type": "income" }
+    ]
+  },
+  "personal": {
+    "operations": [
+      {
+        "id": "op_abc123",
+        "type": "expense",
+        "amount": 450,
+        "categoryId": "p_food",
+        "date": "2026-10-16T19:30",
+        "comment": "ужин"
+      }
+    ]
+  },
+  "business": {
+    "operations": [
+      {
+        "id": "op_def456",
+        "type": "income",
+        "amount": 15000,
+        "categoryId": "b_income",
+        "date": "2026-10-15T12:00",
+        "comment": ""
+      }
+    ]
+  },
+  "crypto": {
+    "assets": [
+      {
+        "id": "ton",
+        "coingeckoId": "the-open-network",
+        "symbol": "TON",
+        "name": "Toncoin",
+        "emoji": "💎"
+      }
+    ],
+    "operations": [
+      {
+        "id": "cop_ghi789",
+        "assetId": "ton",
+        "type": "add",
+        "amount": 10.5,
+        "date": "2026-10-14T10:00",
+        "comment": "покупка",
+        "priceUsd": 5.12,
+        "priceRub": 480.5,
+        "usdRub": 93.85,
+        "totalUsd": 53.76,
+        "totalRub": 5045.25
+      }
+    ]
+  },
+  "rates": {
+    "usdRub": 93.85,
+    "crypto": {
+      "the-open-network": { "usd": 5.12, "rub": 480.5 }
+    },
+    "updatedAt": "2026-10-16T23:40",
+    "lastFetchAt": 1760650800000
+  }
+}
