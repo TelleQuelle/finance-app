@@ -71,11 +71,25 @@ function uid(prefix) {
   return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
-/* Экранирование пользовательских строк перед вставкой в HTML */
+/*
+ * Экранирование пользовательских строк перед вставкой в HTML.
+ * Символы собираются из их кодов (String.fromCharCode), чтобы файл
+ * не зависел от того, как текстовый редактор или буфер обмена
+ * обработает служебные последовательности при копировании.
+ */
 function esc(s) {
-  return String(s ?? '').replace(/[&<>"']/g, c => (
-    { '&': '&', '<': '<', '>': '>', '"': '"', "'": ''' }[c]
-  ));
+  const AMP = String.fromCharCode(38); // амперсанд
+  const LT  = String.fromCharCode(60); // знак «меньше»
+  const GT  = String.fromCharCode(62); // знак «больше»
+  const QU  = String.fromCharCode(34); // двойная кавычка
+  const AP  = String.fromCharCode(39); // одинарная кавычка
+  const map = {};
+  map[AMP] = AMP + 'amp;';
+  map[LT]  = AMP + 'lt;';
+  map[GT]  = AMP + 'gt;';
+  map[QU]  = AMP + 'quot;';
+  map[AP]  = AMP + '#39;';
+  return String(s ?? '').replace(/[&<>"']/g, c => map[c]);
 }
 
 /* Чтение CSS-переменной (для цветов графиков, чтобы они следовали теме) */
