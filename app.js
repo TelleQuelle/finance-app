@@ -1,6 +1,12 @@
 /* ============================================================
    app.js — вся логика приложения: данные, экраны, ввод, статистика
    Данные хранятся в localStorage (ключ finapp_data_v1).
+   Корпоративный счёт поддерживает типы операций:
+   expense / income / transfer (перевод на основной счёт),
+   drawout (необоснованное списание) — оба создают задолженность,
+   repay (возврат долга) — уменьшает её.
+   Баланс личного счёта = личные операции + переводы с корпа − возвраты долга.
+   Задолженность — справочная величина: из общего баланса не вычитается.
    ============================================================ */
 
 'use strict';
@@ -19,11 +25,29 @@ const MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', '�
   'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
 const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн',
   'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+const DOW_SHORT = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
-/* Структура по умолчанию: с ней сравнивается и дополняется сохранённое */
+/* Типы корпоративных операций, создающих или гасящих задолженность */
+const DEBT_TYPES = ['transfer', 'drawout', 'repay'];
+
+/* Метки для особых типов операций */
+function opTypeMeta(t) {
+  if (t === 'transfer') return { emoji: '🏦', label: 'Перевод на основной', sign: -1 };
+  if (t === 'drawout')  return { emoji: '⚠️', label: 'Необоснованное списание', sign: -1 };
+  if (t === 'repay')    return { emoji: '✅', label: 'Возврат долга', sign: 1 };
+  return null;
+}
+
+/* Структура по умолчанию: с ней сравнивается и дополняется сохранённое.
+   Новые поля (showCryptoInTotal, subscriptions) дозаполняются у уже
+   сохранённых данных автоматически — старые записи не теряются. */
 const DEFAULT_STATE = {
   version: 1,
-  settings: { exportReminderShown: false, lastExportAt: null },
+  settings: {
+    exportReminderShown: false,
+    lastExportAt: null,
+    showCryptoInTotal: false /* крипта по умолчанию скрыта из общего баланса */
+  },
   categories: {
     personal: [
       { id: 'p_food',      name: 'Еда',        emoji: '🍔', type: 'expense' },
@@ -55,6 +79,7 @@ const DEFAULT_STATE = {
     ],
     operations: []
   },
+  subscriptions: [], /* справочный список, на балансы не влияет */
   rates: { usdRub: null, crypto: {}, updatedAt: null, lastFetchAt: 0 }
 };
 
@@ -128,6 +153,12 @@ function nowLocalValue() {
     + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
 }
 
+/* Date -> 'YYYY-MM-DDTHH:mm' (локальное время) */
+function toLocal(d) {
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
+    + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+}
+
 function monthKey(iso) { return String(iso).slice(0, 7); }
 
 /* '16 окт, 19:30' */
@@ -144,6 +175,13 @@ function fmtStamp(iso) {
   if (isNaN(d)) return '—';
   return pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1) + ' '
     + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+}
+
+/* '16 окт' — для деталей периода */
+function fmtDay(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return '—';
+  return d.getDate() + ' ' + MONTHS_SHORT[d.getMonth()];
 }
 
 /* --- Анимация числа (однократная, уважает reduced motion) --- */
@@ -263,13 +301,44 @@ function hideMainButton() {
 }
 
 /* ============================================================
-   5. РАСЧЁТЫ: БАЛАНСЫ И КРИПТО-ПОРТФЕЛЬ
+   5. РАСЧЁТЫ: БАЛАНСЫ, ДОЛГ, КРИПТО-ПОРТФЕЛЬ
    ============================================================ */
 
+/* Баланс счёта: доходы и возвраты — плюс, всё остальное — минус */
 function balanceOf(ops) {
   let s = 0;
-  for (const o of ops) s += (o.type === 'income') ? o.amount : -o.amount;
-  return s;
+  for (const o of ops) {
+    if (o.type === 'income' || o.type === 'repay') s += o.amount;
+    else s -= o.amount; /* expense, transfer, drawout */
+  }
+  return Math.round(s * 100) / 100;
+}
+
+/*
+ * Баланс личного счёта: личные операции плюс все переводы с корпоративного
+ * счёта минус все возвраты долга. Перевод реально пополняет личные деньги,
+ * возврат — реально списывает их. Отдельных операций при этом не создаётся,
+ * поэтому ничего не нужно синхронизировать при редактировании/удалении.
+ */
+function personalBalance() {
+  let s = balanceOf(state.personal.operations);
+  for (const o of state.business.operations) {
+    if (o.type === 'transfer') s += o.amount;
+    else if (o.type === 'repay') s -= o.amount;
+  }
+  return Math.round(s * 100) / 100;
+}
+
+/* Задолженность перед корпоративным счётом:
+   переводы и списания увеличивают, возвраты уменьшают.
+   Справочная величина: из общего баланса не вычитается. */
+function debtOf(ops) {
+  let d = 0;
+  for (const o of ops) {
+    if (o.type === 'transfer' || o.type === 'drawout') d += o.amount;
+    else if (o.type === 'repay') d -= o.amount;
+  }
+  return Math.round(d * 100) / 100;
 }
 
 /* Портфель по каждому активу: количество, средняя цена покупки, P/L */
@@ -293,12 +362,14 @@ function cryptoPortfolio() {
     const curRub = price ? price.rub : null;
     const valueUsd = (qty > 0) ? (curUsd !== null ? qty * curUsd : null) : 0;
     const valueRub = (qty > 0) ? (curRub !== null ? qty * curRub : null) : 0;
+    /* База для прибыли: сколько стоила текущая позиция по средней цене */
+    const baseUsd = (avgUsd !== null && qty > 0) ? qty * avgUsd : null;
     let plUsd = null, plPct = null;
     if (avgUsd !== null && curUsd !== null && qty !== 0) {
       plUsd = qty * (curUsd - avgUsd);
       plPct = avgUsd > 0 ? ((curUsd - avgUsd) / avgUsd) * 100 : null;
     }
-    return { asset, qty, avgUsd, curUsd, curRub, valueUsd, valueRub, plUsd, plPct };
+    return { asset, qty, avgUsd, curUsd, curRub, valueUsd, valueRub, baseUsd, plUsd, plPct };
   });
 }
 
@@ -309,6 +380,22 @@ function cryptoTotals() {
     if (p.valueRub !== null) rub += p.valueRub;
   }
   return { usd, rub };
+}
+
+/* Общая прибыль/убыток портфеля: сумма по позициям и процент от вложенного */
+function cryptoOverallPL() {
+  const port = cryptoPortfolio();
+  let pl = 0, base = 0, has = false;
+  for (const p of port) {
+    if (p.qty !== 0 && p.plUsd !== null) {
+      pl += p.plUsd;
+      if (p.baseUsd !== null) base += p.baseUsd;
+      has = true;
+    }
+  }
+  if (!has) return null;
+  const pct = base > 0 ? (pl / base) * 100 : null;
+  return { pl, pct };
 }
 
 /* Строка «актуально на …, $1 = … ₽» */
@@ -352,10 +439,16 @@ function refreshAfterDataChange() {
 let lastTotalShown = null;
 
 function renderHome() {
-  const b  = balanceOf(state.personal.operations);
+  const b  = personalBalance();
   const bb = balanceOf(state.business.operations);
   const ct = cryptoTotals();
-  const total = b + bb + ct.rub;
+  const debt = debtOf(state.business.operations);
+  const showCrypto = !!state.settings.showCryptoInTotal;
+
+  /* Общий баланс: крипта учитывается только если тумблер включён.
+     Задолженность — справка и в итог не входит: деньги при переводе
+     уже переехали с корпоративного счёта на личный, сумма не потерялась */
+  const total = b + bb + (showCrypto ? ct.rub : 0);
 
   /* Баннер-напоминание про экспорт: виден до первого экспорта */
   $('#export-banner').classList.toggle('hidden', !!state.settings.exportReminderShown);
@@ -367,7 +460,20 @@ function renderHome() {
 
   $('#home-personal').textContent = fmtRub(b);
   $('#home-business').textContent = fmtRub(bb);
-  $('#home-crypto').textContent = fmtRub(ct.rub);
+
+  /* Строка долга: только для справки, из итога не вычитается */
+  $('#home-debt-row').classList.toggle('hidden', debt <= 0);
+  $('#home-debt').textContent = fmtRub(debt);
+
+  /* Крипта: сумма показывается только при включённом тумблере */
+  const cryptoEl = $('#home-crypto');
+  cryptoEl.textContent = showCrypto ? fmtRub(ct.rub) : '••••';
+  cryptoEl.classList.toggle('dim', !showCrypto);
+  const sw = $('#crypto-visibility');
+  sw.classList.toggle('on', showCrypto);
+  sw.setAttribute('aria-label', showCrypto
+    ? 'Скрыть крипту из общего баланса'
+    : 'Показать крипту в общем балансе');
 
   /* Доходы и расходы за текущий месяц (личный счёт) */
   const mk = monthKey(nowLocalValue());
@@ -411,11 +517,25 @@ function opRowHTML(o) {
       + '<div class="op-amount ' + (o.type === 'add' ? 'pos' : '') + '">' + sign + fmtRub(o.totalRub) + '</div>'
       + '</div>';
   }
+
+  /* Особые типы корпоративных операций: перевод, списание, возврат долга */
+  const meta = opTypeMeta(o.type);
+  const scopeLabel = o.scope === 'business' ? 'Корп.' : 'Личные';
+  if (meta) {
+    const sign = meta.sign < 0 ? '−' : '+';
+    return '<div class="op-row" data-op-id="' + esc(o.id) + '" data-op-scope="' + esc(o.scope) + '">'
+      + '<div class="op-emoji">' + meta.emoji + '</div>'
+      + '<div class="op-main"><div class="op-title">' + esc(meta.label)
+      + (o.comment ? ' · ' + esc(o.comment) : '') + '</div>'
+      + '<div class="op-sub">' + esc(fmtDateShort(o.date)) + ' · ' + scopeLabel + '</div></div>'
+      + '<div class="op-amount ' + (meta.sign < 0 ? '' : 'pos') + '">' + sign + fmtRub(o.amount) + '</div>'
+      + '</div>';
+  }
+
   const cat = findCat(o.scope, o.categoryId);
   const emoji = cat ? cat.emoji : '❔';
   const name = cat ? cat.name : 'Без категории';
   const sign = o.type === 'income' ? '+' : '−';
-  const scopeLabel = o.scope === 'business' ? 'Корп.' : 'Личные';
   return '<div class="op-row" data-op-id="' + esc(o.id) + '" data-op-scope="' + esc(o.scope) + '">'
     + '<div class="op-emoji">' + esc(emoji) + '</div>'
     + '<div class="op-main"><div class="op-title">' + esc(name)
@@ -438,8 +558,32 @@ function renderHistory() {
 
   const ops = state[histScope].operations;
 
-  /* Список месяцев, в которых есть операции */
-  const months = [...new Set(ops.map(o => monthKey(o.date)))].sort().reverse();
+  /* Карточка задолженности: только для корпоративного счёта */
+  const dc = $('#debt-card');
+  if (histScope === 'business') {
+    dc.classList.remove('hidden');
+    const d = debtOf(ops);
+    $('#debt-amount').textContent = fmtRub(d);
+    $('#debt-amount').classList.toggle('neg', d > 0);
+    $('#debt-zero').classList.toggle('hidden', d > 0);
+    $('#btn-repay').classList.toggle('hidden', d <= 0);
+  } else {
+    dc.classList.add('hidden');
+  }
+
+  /* В историю личного счёта добавляются виртуальные строки переводов
+     с корпоративного счёта и возвратов долга: они объясняют, откуда
+     в личном балансе взялись эти суммы. Тап по строке открывает
+     редактирование самой корпоративной операции */
+  let extra = [];
+  if (histScope === 'personal') {
+    extra = state.business.operations
+      .filter(o => o.type === 'transfer' || o.type === 'repay')
+      .map(o => ({ ...o, scope: 'business' }));
+  }
+
+  /* Список месяцев: из обычных и виртуальных операций */
+  const months = [...new Set([...ops, ...extra].map(o => monthKey(o.date)))].sort().reverse();
   const sel = $('#hist-month');
   sel.innerHTML = '<option value="all">Все время</option>' + months.map(m => {
     const parts = m.split('-');
@@ -448,14 +592,17 @@ function renderHistory() {
   if (histMonth !== 'all' && !months.includes(histMonth)) histMonth = 'all';
   sel.value = histMonth;
 
-  $('#hist-balance').textContent = fmtRub(balanceOf(ops));
+  /* Баланс счёта: для личного — с учётом переводов и возвратов */
+  $('#hist-balance').textContent = fmtRub(
+    histScope === 'personal' ? personalBalance() : balanceOf(ops)
+  );
 
-  const list = ops
+  const list = [...ops, ...extra]
     .filter(o => histMonth === 'all' || monthKey(o.date) === histMonth)
     .sort((a, b) => b.date.localeCompare(a.date));
 
   $('#hist-list').innerHTML = list.length
-    ? list.map(o => opRowHTML({ ...o, scope: histScope })).join('')
+    ? list.map(o => opRowHTML({ ...o, scope: o.scope || histScope })).join('')
     : '<div class="empty">Операций нет</div>';
 }
 
@@ -532,13 +679,14 @@ function cryptoOpRowHTML(o) {
 }
 
 /* ============================================================
-   10. ЭКРАН: СТАТИСТИКА
+   10. ЭКРАН: СТАТИСТИКА (подробная)
    ============================================================ */
 
 let statScope = 'personal';
 let statPeriod = 'month';
 let doughnutChart = null;
 let monthsChart = null;
+let dowChart = null;
 
 /* Начало выбранного периода (null = всё время) */
 function periodStart() {
@@ -556,6 +704,32 @@ function periodStart() {
   return null;
 }
 
+/* Диапазон предыдущего периода той же прошедшей длины — для сравнения.
+   Для «всё время» сравнения нет (возвращается null). */
+function prevPeriodRange() {
+  if (statPeriod === 'all') return null;
+  const now = new Date();
+  let start, prevStart, label;
+  if (statPeriod === 'month') {
+    start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0);
+    prevStart = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0);
+    label = 'против ' + MONTHS[(now.getMonth() - 1 + 12) % 12].toLowerCase().slice(0, 3);
+  } else if (statPeriod === '3m') {
+    start = new Date(now.getFullYear(), now.getMonth() - 2, 1, 0, 0);
+    prevStart = new Date(now.getFullYear(), now.getMonth() - 5, 1, 0, 0);
+    label = 'против прошлых 3 мес';
+  } else {
+    start = new Date(now.getFullYear(), 0, 1, 0, 0);
+    prevStart = new Date(now.getFullYear() - 1, 0, 1, 0, 0);
+    label = 'против ' + (now.getFullYear() - 1);
+  }
+  /* Прошлый период берём той же длины, что прошла текущая часть:
+     сравнение честное даже в незаконченном месяце */
+  const length = now - start;
+  const prevEnd = new Date(prevStart.getTime() + length);
+  return { start: toLocal(prevStart), end: toLocal(prevEnd), label };
+}
+
 /* Список последних N месяцев в виде 'YYYY-MM' */
 function monthKeysBack(n) {
   const out = [];
@@ -567,6 +741,30 @@ function monthKeysBack(n) {
   return out;
 }
 
+/* Строка сравнения «текущее против предыдущего» */
+function cmpRowHTML(label, cur, prev, invert) {
+  let pctHTML;
+  if (prev > 0) {
+    const pct = ((cur - prev) / prev) * 100;
+    /* Рост доходов — хорошо (pos), рост расходов — плохо (neg);
+       invert переключает семантику для расходов */
+    const good = invert ? pct < 0 : pct > 0;
+    const cls = good ? 'pos' : 'neg';
+    const sign = pct >= 0 ? '+' : '−';
+    pctHTML = '<span class="cmp-pct ' + cls + '">' + sign + fmtNum(Math.abs(pct), 1) + '%</span>';
+  } else {
+    pctHTML = '<span class="cmp-pct">—</span>';
+  }
+  return '<div class="cmp-row"><span>' + esc(label) + '</span>'
+    + '<span><b>' + fmtRub(cur) + '</b> ' + pctHTML
+    + ' <span class="cmp-prev">' + esc('· было ' + fmtRub(prev)) + '</span></span></div>';
+}
+
+/* Строка деталей «название — значение» */
+function detRowHTML(label, value) {
+  return '<div class="det-row"><span>' + esc(label) + '</span><b>' + value + '</b></div>';
+}
+
 function renderStats() {
   $('#stat-scope [data-scope="personal"]').classList.toggle('active', statScope === 'personal');
   $('#stat-scope [data-scope="business"]').classList.toggle('active', statScope === 'business');
@@ -574,7 +772,57 @@ function renderStats() {
     b.classList.toggle('active', b.dataset.period === statPeriod));
 
   const start = periodStart();
+  const now = nowLocalValue();
+  /* В статистику попадают только обычные операции: переводы и возвраты —
+     перемещения между счетами, а не доходы/расходы, иначе цифры завышались бы */
   const ops = state[statScope].operations.filter(o => !start || o.date >= start);
+
+  /* --- KPI: доходы, расходы, итог, среднее в день --- */
+  let inc = 0, exp = 0, count = 0;
+  for (const o of ops) {
+    count++;
+    if (o.type === 'income') inc += o.amount;
+    else if (o.type === 'expense') exp += o.amount;
+  }
+  const net = inc - exp;
+
+  /* Дней в периоде: от начала периода (или первой операции) до сегодня */
+  let days;
+  if (start) {
+    days = Math.max(1, Math.ceil((new Date(now) - new Date(start)) / 86400000));
+  } else {
+    const dates = ops.map(o => o.date).sort();
+    const first = dates.length ? new Date(dates[0]) : new Date();
+    days = Math.max(1, Math.ceil((new Date(now) - first) / 86400000));
+  }
+
+  $('#kpi-inc').textContent = '+' + fmtRub(inc);
+  $('#kpi-exp').textContent = '−' + fmtRub(exp);
+  const netEl = $('#kpi-net');
+  netEl.textContent = (net >= 0 ? '+' : '−') + fmtRub(Math.abs(net));
+  netEl.classList.toggle('pos', net >= 0);
+  netEl.classList.toggle('neg', net < 0);
+  $('#kpi-avgday').textContent = fmtRub(exp / days);
+
+  /* --- Сравнение с предыдущим периодом --- */
+  const prev = prevPeriodRange();
+  const cmpCard = $('#compare-card');
+  if (prev) {
+    cmpCard.classList.remove('hidden');
+    $('#compare-title').textContent = 'Сравнение (' + prev.label + ')';
+    const prevOps = state[statScope].operations
+      .filter(o => o.date >= prev.start && o.date < prev.end);
+    let pInc = 0, pExp = 0;
+    for (const o of prevOps) {
+      if (o.type === 'income') pInc += o.amount;
+      else if (o.type === 'expense') pExp += o.amount;
+    }
+    $('#stat-compare').innerHTML =
+      cmpRowHTML('Доходы', inc, pInc, false)
+      + cmpRowHTML('Расходы', exp, pExp, true);
+  } else {
+    cmpCard.classList.add('hidden');
+  }
 
   /* --- Расходы по категориям --- */
   const byCat = {};
@@ -585,6 +833,7 @@ function renderStats() {
 
   if (doughnutChart) { doughnutChart.destroy(); doughnutChart = null; }
   if (monthsChart) { monthsChart.destroy(); monthsChart = null; }
+  if (dowChart) { dowChart.destroy(); dowChart = null; }
 
   const dEmpty = $('#doughnut-empty');
   const dCanvas = $('#chart-doughnut');
@@ -671,7 +920,7 @@ function renderStats() {
       data: {
         labels,
         datasets: [
-          { label: 'Доходы', data: incData, backgroundColor: getCss('--pos') || '#3DDC97', borderRadius: 5, maxBarThickness: 18 },
+          { label: 'Доходs', data: incData, backgroundColor: getCss('--pos') || '#3DDC97', borderRadius: 5, maxBarThickness: 18 },
           { label: 'Расходы', data: expData, backgroundColor: getCss('--neg') || '#FF7A6B', borderRadius: 5, maxBarThickness: 18 }
         ]
       },
@@ -682,6 +931,56 @@ function renderStats() {
             labels: { color: getCss('--muted') || '#8FA9B5', boxWidth: 10, font: { size: 11 } }
           }
         },
+        scales: {
+          x: { ticks: { color: getCss('--muted') || '#8FA9B5' }, grid: { display: false } },
+          y: {
+            ticks: {
+              color: getCss('--muted') || '#8FA9B5',
+              callback: v => new Intl.NumberFormat('ru-RU', { notation: 'compact' }).format(v)
+            },
+            grid: { color: getCss('--line') || '#24404F' },
+            border: { display: false }
+          }
+        }
+      }
+    });
+  }
+
+  /* --- Расходы по дням недели --- */
+  const dowEmpty = $('#dow-empty');
+  const dowCanvas = $('#chart-dow');
+  const dowTotals = [0, 0, 0, 0, 0, 0, 0]; // Пн..Вс
+  for (const o of ops) {
+    if (o.type === 'expense') {
+      const d = new Date(o.date);
+      if (!isNaN(d)) dowTotals[(d.getDay() + 6) % 7] += o.amount;
+    }
+  }
+  const dowHas = dowTotals.some(v => v > 0);
+
+  if (!dowHas || !window.Chart) {
+    dowCanvas.classList.add('hidden');
+    dowEmpty.classList.toggle('hidden', dowHas);
+    dowEmpty.textContent = window.Chart
+      ? 'Нет трат за выбранный период'
+      : 'График недоступен — не загрузилась библиотека Chart.js';
+  } else {
+    dowCanvas.classList.remove('hidden');
+    dowEmpty.classList.add('hidden');
+    dowChart = new Chart(dowCanvas.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: DOW_SHORT,
+        datasets: [{
+          label: 'Расходы',
+          data: dowTotals,
+          backgroundColor: getCss('--accent') || '#FFC53D',
+          borderRadius: 5,
+          maxBarThickness: 22
+        }]
+      },
+      options: {
+        plugins: { legend: { display: false } },
         scales: {
           x: { ticks: { color: getCss('--muted') || '#8FA9B5' }, grid: { display: false } },
           y: {
@@ -712,23 +1011,119 @@ function renderStats() {
       }).join('')
     : '<div class="empty">Нет трат за период</div>';
 
-  /* --- Крипто-портфель отдельно --- */
+  /* --- Детали периода --- */
+  const expOnly = ops.filter(o => o.type === 'expense');
+  const largest = expOnly.slice().sort((a, b) => b.amount - a.amount)[0];
+  let largestHTML = '—';
+  if (largest) {
+    const c = findCat(statScope, largest.categoryId);
+    largestHTML = esc((c ? c.emoji + ' ' + c.name : 'Без категории')
+      + ' · ' + fmtRub(largest.amount) + ' (' + fmtDay(largest.date) + ')');
+  }
+
+  /* Самый затратный день */
+  const byDay = {};
+  for (const o of expOnly) {
+    const day = o.date.slice(0, 10);
+    byDay[day] = (byDay[day] || 0) + o.amount;
+  }
+  let busiestDay = null, busiestSum = 0;
+  for (const [day, v] of Object.entries(byDay)) {
+    if (v > busiestSum) { busiestSum = v; busiestDay = day; }
+  }
+  const daysWithSpend = Object.keys(byDay).length;
+
+  /* Для личного счёта: движение переводов и возвратов за период */
+  let personalMoveHTML = '';
+  if (statScope === 'personal') {
+    let trSum = 0, rpSum = 0;
+    for (const o of state.business.operations) {
+      if (start && o.date < start) continue;
+      if (o.type === 'transfer') trSum += o.amount;
+      else if (o.type === 'repay') rpSum += o.amount;
+    }
+    personalMoveHTML =
+      detRowHTML('Переводы с корпоративного за период', fmtRub(trSum))
+      + detRowHTML('Возвраты долга за период', fmtRub(rpSum));
+  }
+
+  $('#stat-details').innerHTML =
+    detRowHTML('Операций за период', String(count))
+    + detRowHTML('Дней с тратами', daysWithSpend + ' из ' + days)
+    + detRowHTML('Самая крупная трата', largestHTML)
+    + detRowHTML('Самый затратный день', busiestDay
+      ? esc(fmtDay(busiestDay) + ' · ') + fmtRub(busiestSum)
+      : '—')
+    + personalMoveHTML;
+
+  /* --- Корпоративный счёт: движение долга --- */
+  const debtCard = $('#stat-debt-card');
+  if (statScope === 'business') {
+    debtCard.classList.remove('hidden');
+    const allBiz = state.business.operations;
+    const debt = debtOf(allBiz);
+    let tr = 0, dr = 0, rp = 0;
+    for (const o of ops) {
+      if (o.type === 'transfer') tr += o.amount;
+      else if (o.type === 'drawout') dr += o.amount;
+      else if (o.type === 'repay') rp += o.amount;
+    }
+    $('#stat-debt').innerHTML =
+      detRowHTML('Задолженность сейчас', fmtRub(debt))
+      + detRowHTML('Переводы за период', fmtRub(tr))
+      + detRowHTML('Списания за период', fmtRub(dr))
+      + detRowHTML('Возвраты за период', fmtRub(rp));
+  } else {
+    debtCard.classList.add('hidden');
+  }
+
+  /* --- Крипто-портфель: подробная таблица --- */
   const ct = cryptoTotals();
   const port = cryptoPortfolio();
-  $('#stat-crypto').innerHTML =
-    '<div class="balance-strip" style="margin-bottom:10px">'
-    + '<span>Всего</span><b>' + fmtUsd(ct.usd) + ' · ' + fmtRub(ct.rub) + '</b></div>'
-    + port.filter(p => p.qty !== 0).map(p =>
-        '<div class="top-row"><div class="top-line">'
-        + '<span>' + esc(p.asset.emoji + ' ' + p.asset.symbol) + '</span>'
-        + '<span><b>' + (p.valueUsd !== null ? fmtUsdSmart(p.valueUsd) : '—') + '</b></span>'
-        + '</div></div>'
-      ).join('')
-    + (port.every(p => p.qty === 0) ? '<div class="empty">Крипто-активов нет</div>' : '');
+  const ovr = cryptoOverallPL();
+
+  let cryptoHTML =
+    '<div class="balance-strip" style="margin-bottom:8px">'
+    + '<span>Всего</span><b>' + fmtUsd(ct.usd) + ' · ' + fmtRub(ct.rub) + '</b></div>';
+
+  if (ovr && ovr.pct !== null) {
+    const cls = ovr.pl >= 0 ? 'pos' : 'neg';
+    const sign = ovr.pl >= 0 ? '+' : '−';
+    cryptoHTML += '<div class="det-row"><span>Общая прибыль/убыток</span>'
+      + '<b class="' + cls + '">' + sign + fmtNum(Math.abs(ovr.pct), 2) + '% · '
+      + sign + fmtUsdSmart(Math.abs(ovr.pl)) + '</b></div>';
+  }
+
+  const positions = port.filter(p => p.qty !== 0);
+  cryptoHTML += positions.map(p => {
+    const a = p.asset;
+    let plLine = '<div class="top-line sub"><span>P/L</span><span>—</span></div>';
+    if (p.plPct !== null) {
+      const cls = p.plUsd >= 0 ? 'pos' : 'neg';
+      const sign = p.plUsd >= 0 ? '+' : '−';
+      plLine = '<div class="top-line sub"><span>P/L</span>'
+        + '<span><b class="' + cls + '">' + (p.plPct >= 0 ? '+' : '−')
+        + fmtNum(Math.abs(p.plPct), 2) + '% · ' + sign + fmtUsdSmart(Math.abs(p.plUsd)) + '</b></span></div>';
+    }
+    return '<div class="cr-stat">'
+      + '<div class="top-line"><span>' + esc(a.emoji + ' ' + a.symbol) + '</span>'
+      + '<span><b>' + fmtNum(p.qty) + ' ' + esc(a.symbol) + '</b></span></div>'
+      + '<div class="top-line sub"><span>'
+      + (p.avgUsd !== null ? 'ср. ' + fmtUsdSmart(p.avgUsd) : 'ср. —')
+      + ' → ' + (p.curUsd !== null ? fmtUsdSmart(p.curUsd) : 'цены нет') + '</span>'
+      + '<span><b>' + (p.valueUsd !== null ? fmtUsdSmart(p.valueUsd) : '—') + '</b>'
+      + (p.valueRub !== null ? ' · ' + fmtRubSmart(p.valueRub) : '') + '</span></div>'
+      + plLine
+      + '</div>';
+  }).join('');
+
+  if (!positions.length) cryptoHTML += '<div class="empty">Крипто-активов нет</div>';
+
+  $('#stat-crypto').innerHTML = cryptoHTML;
 }
 
 /* ============================================================
-   11. ЭКРАН: НАСТРОЙКИ (экспорт, категории, активы)
+   11. ЭКРАН: НАСТРОЙКИ (экспорт, категории, подписки, активы)
    ============================================================ */
 
 function catTypeLabel(t) {
@@ -742,6 +1137,7 @@ function renderSettings() {
 
   renderCatList('personal');
   renderCatList('business');
+  renderSubs();
   renderAssetList();
 }
 
@@ -756,6 +1152,90 @@ function renderCatList(scope) {
     + '</button>'
   ).join('');
 }
+
+/* --- Подписки (справочно) --- */
+
+function renderSubs() {
+  const list = state.subscriptions;
+  $('#subs-list').innerHTML = list.length
+    ? list.map(s =>
+        '<button class="sub-row" data-sub-id="' + esc(s.id) + '">'
+        + '<span class="op-emoji">' + esc(s.emoji) + '</span>'
+        + '<span class="op-main"><span class="op-title">' + esc(s.name) + '</span>'
+        + '<div class="op-sub">' + (s.unit === 'month' ? 'Ежемесячно' : 'Ежегодно') + '</div></span>'
+        + '<span class="sub-sum"><b>' + fmtRub(s.amount)
+        + (s.unit === 'month' ? '/мес' : '/год') + '</b>'
+        + (s.unit === 'year' ? '<small>≈ ' + fmtRub(s.amount / 12) + '/мес</small>' : '')
+        + '</span>'
+        + '</button>'
+      ).join('')
+    : '<div class="empty-inline">Список пуст — добавьте первую подписку</div>';
+
+  /* Итоги: месячный и годовой эквиваленты всех подписок */
+  let monthly = 0;
+  for (const s of list) monthly += (s.unit === 'month') ? s.amount : s.amount / 12;
+  $('#subs-total').textContent = list.length
+    ? 'Всего: ' + fmtRub(monthly) + '/мес · ' + fmtRub(monthly * 12) + '/год'
+    : '';
+}
+
+const SUB_EMOJI_PRESETS = ['📺', '🎵', '☁️', '🎮', '🚗', '📱', '🏋️', '📰', '💡', '🌐'];
+let subEditId = null;
+
+function openSubModal(id) {
+  subEditId = id;
+  const s = id ? state.subscriptions.find(x => x.id === id) : null;
+  $('#sub-title').textContent = s ? 'Изменить подписку' : 'Новая подписка';
+  $('#sub-emoji').value = s ? s.emoji : '📺';
+  $('#sub-name').value = s ? s.name : '';
+  $('#sub-amount').value = s ? String(s.amount) : '';
+  $('#sub-period').value = s ? s.unit : 'month';
+  $('#sub-delete').classList.toggle('hidden', !s);
+  $('#sub-emoji-presets').innerHTML = SUB_EMOJI_PRESETS.map(e =>
+    '<button class="chip" data-emoji="' + e + '" type="button">' + e + '</button>'
+  ).join('');
+  openModal('modal-sub');
+}
+
+function saveSub() {
+  const emoji = $('#sub-emoji').value.trim() || '📺';
+  const name = $('#sub-name').value.trim();
+  const amount = parseFloat(String($('#sub-amount').value).replace(',', '.'));
+  const unit = $('#sub-period').value === 'year' ? 'year' : 'month';
+  if (!name) { toast('Введите название подписки', true); return; }
+  if (!isFinite(amount) || amount <= 0) { toast('Введите сумму больше нуля', true); return; }
+
+  const rec = {
+    id: subEditId || uid('sub'),
+    emoji,
+    name,
+    amount: Math.round(amount * 100) / 100,
+    unit
+  };
+
+  if (subEditId) {
+    const idx = state.subscriptions.findIndex(x => x.id === subEditId);
+    if (idx >= 0) state.subscriptions[idx] = rec;
+    else state.subscriptions.push(rec);
+  } else {
+    state.subscriptions.push(rec);
+  }
+  saveState();
+  hapticNotify('success');
+  closeModal('modal-sub');
+  renderSettings();
+}
+
+function deleteSub() {
+  if (!confirm('Удалить эту подписку из списка?')) return;
+  state.subscriptions = state.subscriptions.filter(x => x.id !== subEditId);
+  saveState();
+  hapticNotify('warning');
+  closeModal('modal-sub');
+  renderSettings();
+}
+
+/* --- Крипто-активы --- */
 
 function renderAssetList() {
   $('#assets-settings').innerHTML = state.crypto.assets.map(a =>
@@ -774,18 +1254,20 @@ function renderAssetList() {
 
 const opSt = {
   scope: 'personal',    // personal | business
-  type: 'expense',      // expense | income
+  type: 'expense',      // expense | income | transfer | drawout | repay
   amountStr: '',        // то, что набрано на клавиатуре
   categoryId: null,
   editId: null,
-  origScope: null       // исходный счёт при редактировании
+  origScope: null,      // исходный счёт при редактировании
+  repayMode: false      // шторка открыта с кнопки «Вернуть долг»
 };
 
 function openOpModal(opts = {}) {
   opSt.editId = opts.editId || null;
+  opSt.repayMode = !!opts.repayMode;
   opSt.scope = opts.scope || 'personal';
   opSt.origScope = opSt.editId ? opSt.scope : null;
-  opSt.type = 'expense';
+  opSt.type = opSt.repayMode ? 'repay' : 'expense';
   opSt.amountStr = '';
   opSt.categoryId = null;
 
@@ -798,32 +1280,67 @@ function openOpModal(opts = {}) {
       $('#op-date').value = o.date;
       $('#op-comment').value = o.comment || '';
     }
-    $('#op-title').textContent = 'Изменить операцию';
+    $('#op-title').textContent = opSt.type === 'repay' ? 'Изменить возврат долга' : 'Изменить операцию';
     $('#op-delete').classList.remove('hidden');
   } else {
     $('#op-date').value = nowLocalValue();
     $('#op-comment').value = '';
-    $('#op-title').textContent = 'Новая операция';
+    $('#op-title').textContent = opSt.repayMode ? 'Возврат долга' : 'Новая операция';
     $('#op-delete').classList.add('hidden');
   }
 
   syncOpUI();
   openModal('modal-op');
-  showMainButton('Сохранить', saveOp);
+  showMainButton(opSt.repayMode ? 'Вернуть долг' : 'Сохранить', saveOp);
 }
 
 function syncOpUI() {
+  const isBiz = opSt.scope === 'business';
+  const isDebtType = DEBT_TYPES.includes(opSt.type);
+
+  /* На личном счёте особых типов не бывает — сбрасываем на расход */
+  if (!isBiz && isDebtType) opSt.type = 'expense';
+
+  /* Кнопки «Перевод» и «Списание» видны только на корпоративном счёте */
+  document.querySelectorAll('#op-type .biz-only').forEach(b =>
+    b.classList.toggle('hidden', !isBiz));
+
+  /* Сегмент типа скрыт в режиме возврата долга (тип фиксирован) */
+  $('#op-scope').classList.toggle('hidden', opSt.repayMode);
+  $('#op-type').classList.toggle('hidden', opSt.repayMode || opSt.type === 'repay');
+
   document.querySelectorAll('#op-scope .seg-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.scope === opSt.scope));
+  document.querySelectorAll('#op-type .seg-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.type === opSt.type));
   const tE = $('#op-type [data-type="expense"]');
   const tI = $('#op-type [data-type="income"]');
-  tE.classList.toggle('active', opSt.type === 'expense');
-  tI.classList.toggle('active', opSt.type === 'income');
   tE.classList.toggle('neg', opSt.type === 'expense');
   tI.classList.toggle('pos', opSt.type === 'income');
 
   $('#op-amount-display').textContent = opSt.amountStr === '' ? '0' : opSt.amountStr;
-  renderOpCats();
+
+  /* Категории нужны только обычным операциям */
+  $('#op-cats').classList.toggle('hidden', isDebtType);
+
+  /* Информационная строка о задолженности */
+  const note = $('#op-note');
+  if (opSt.type === 'transfer') {
+    note.textContent = 'Уйдёт с корпоративного счёта, увеличит задолженность и поступит на личный счёт';
+    note.classList.remove('hidden');
+  } else if (opSt.type === 'drawout') {
+    note.textContent = 'Сумма уйдёт со счёта и увеличит вашу задолженность';
+    note.classList.remove('hidden');
+  } else if (opSt.type === 'repay') {
+    const avail = debtOf(state.business.operations.filter(x => x.id !== (opSt.editId || '')));
+    note.textContent = 'Уменьшит задолженность (доступно: ' + fmtRub(Math.max(avail, 0))
+      + ') и спишется с личного счёта';
+    note.classList.remove('hidden');
+  } else {
+    note.classList.add('hidden');
+  }
+
+  if (!isDebtType) renderOpCats();
 }
 
 function renderOpCats() {
@@ -842,18 +1359,32 @@ function saveOp() {
   if (!isFinite(amount) || amount <= 0) {
     toast('Введите сумму больше нуля', true); hapticNotify('error'); return;
   }
-  if (!opSt.categoryId) {
+  const isDebtType = DEBT_TYPES.includes(opSt.type);
+
+  /* Категория нужна только обычным операциям */
+  if (!isDebtType && !opSt.categoryId) {
     toast('Выберите категорию', true); hapticNotify('error'); return;
   }
   const dateVal = $('#op-date').value;
   if (!dateVal) { toast('Укажите дату', true); return; }
   const comment = $('#op-comment').value.trim().slice(0, 200);
 
+  /* Возврат долга не может превышать саму задолженность */
+  if (opSt.type === 'repay') {
+    const others = state.business.operations.filter(x => x.id !== (opSt.editId || ''));
+    const avail = debtOf(others);
+    if (amount > avail + 1e-9) {
+      toast('Вернуть можно не больше ' + fmtRub(Math.max(avail, 0)), true);
+      hapticNotify('error');
+      return;
+    }
+  }
+
   const rec = {
     id: opSt.editId || uid('op'),
     type: opSt.type,
     amount: Math.round(amount * 100) / 100,
-    categoryId: opSt.categoryId,
+    categoryId: isDebtType ? null : opSt.categoryId,
     date: dateVal,
     comment
   };
@@ -876,6 +1407,11 @@ function saveOp() {
   hapticNotify('success');
   closeModal('modal-op');
   refreshAfterDataChange();
+  if (opSt.type === 'transfer') {
+    toast('Корп −' + fmtRub(rec.amount) + ', личный +' + fmtRub(rec.amount));
+  } else if (opSt.type === 'drawout') {
+    toast('Задолженность увеличена на ' + fmtRub(rec.amount));
+  }
 }
 
 function deleteOp() {
@@ -1329,18 +1865,23 @@ async function refreshRatesManual() {
 
 function bindEvents() {
 
-  /* --- Блокировка горизонтального сдвига страницы (iOS/Telegram):
-         если палец тянет вбок сильнее, чем по вертикали, жест отменяется.
-         Вертикальная прокрутка списков и шторок работает как раньше --- */
-  let touchX = 0, touchY = 0;
+  /* --- Блокировка горизонтального сдвига страницы (iOS/Telegram).
+         Ось жеста определяется один раз при первом движении больше 8px:
+         если палец пошёл вбок — все последующие движения этого касания
+         отменяются, вертикальная прокрутка не затрагивается --- */
+  let swX = 0, swY = 0, swAxis = null;
   document.addEventListener('touchstart', e => {
-    touchX = e.touches[0].clientX;
-    touchY = e.touches[0].clientY;
+    swX = e.touches[0].clientX;
+    swY = e.touches[0].clientY;
+    swAxis = null;
   }, { passive: true });
   document.addEventListener('touchmove', e => {
-    const dx = Math.abs(e.touches[0].clientX - touchX);
-    const dy = Math.abs(e.touches[0].clientY - touchY);
-    if (dx > dy && dx > 6) e.preventDefault();
+    if (!swAxis) {
+      const dx = Math.abs(e.touches[0].clientX - swX);
+      const dy = Math.abs(e.touches[0].clientY - swY);
+      if (dx > 8 || dy > 8) swAxis = (dx > dy) ? 'x' : 'y';
+    }
+    if (swAxis === 'x') e.preventDefault();
   }, { passive: false });
 
   /* --- Навигация --- */
@@ -1353,6 +1894,14 @@ function bindEvents() {
   $('#btn-crypto-op').addEventListener('click', () => { hapticTap(); openCryptoModal({}); });
   $('#btn-crypto-assets').addEventListener('click', () => showScreen('screen-settings'));
 
+  /* --- Тумблер крипты на главной --- */
+  $('#crypto-visibility').addEventListener('click', () => {
+    state.settings.showCryptoInTotal = !state.settings.showCryptoInTotal;
+    saveState();
+    hapticSelect();
+    renderHome();
+  });
+
   /* --- Баннер напоминания --- */
   $('#banner-export-btn').addEventListener('click', exportData);
   $('#banner-ok-btn').addEventListener('click', () => {
@@ -1364,6 +1913,12 @@ function bindEvents() {
   /* --- Котировки --- */
   $('#btn-refresh-rates').addEventListener('click', refreshRatesManual);
   $('#btn-refresh-rates-2').addEventListener('click', refreshRatesManual);
+
+  /* --- Кнопка «Вернуть долг» на карточке задолженности --- */
+  $('#btn-repay').addEventListener('click', () => {
+    hapticTap();
+    openOpModal({ scope: 'business', repayMode: true });
+  });
 
   /* --- Тап по операции открывает её редактирование (главная, история, крипта) --- */
   document.addEventListener('click', e => {
@@ -1384,6 +1939,11 @@ function bindEvents() {
     const assetRow = e.target.closest('.asset-row');
     if (assetRow) {
       openAssetModal(assetRow.dataset.assetId);
+      return;
+    }
+    const subRow = e.target.closest('.sub-row');
+    if (subRow) {
+      openSubModal(subRow.dataset.subId);
       return;
     }
     const closer = e.target.closest('.modal-close');
@@ -1422,6 +1982,7 @@ function bindEvents() {
       if (b.dataset.scope !== opSt.scope) {
         opSt.scope = b.dataset.scope;
         opSt.categoryId = null;
+        if (!DEBT_TYPES.includes(opSt.type)) opSt.type = 'expense';
         hapticSelect();
         syncOpUI();
       }
@@ -1491,6 +2052,14 @@ function bindEvents() {
   $('#cat-save').addEventListener('click', saveCat);
   $('#cat-delete').addEventListener('click', deleteCat);
 
+  /* --- Модалка подписки --- */
+  $('#sub-emoji-presets').addEventListener('click', e => {
+    const chip = e.target.closest('.chip');
+    if (chip && chip.dataset.emoji) $('#sub-emoji').value = chip.dataset.emoji;
+  });
+  $('#sub-save').addEventListener('click', saveSub);
+  $('#sub-delete').addEventListener('click', deleteSub);
+
   /* --- Модалка актива --- */
   $('#as-save').addEventListener('click', saveAsset);
   $('#as-delete').addEventListener('click', deleteAsset);
@@ -1504,6 +2073,7 @@ function bindEvents() {
   });
   $('#btn-add-cat-personal').addEventListener('click', () => openCatModal('personal', null));
   $('#btn-add-cat-business').addEventListener('click', () => openCatModal('business', null));
+  $('#btn-add-sub').addEventListener('click', () => openSubModal(null));
   $('#btn-add-asset').addEventListener('click', () => openAssetModal(null));
   $('#btn-wipe').addEventListener('click', wipeAll);
 }
