@@ -7,6 +7,7 @@
    repay (возврат долга) — уменьшает её.
    Баланс личного счёта = личные операции + переводы с корпа − возвраты долга.
    Задолженность — справочная величина: из общего баланса не вычитается.
+   Должники и подписки — справочные списки, на балансы не влияют.
    ============================================================ */
 
 'use strict';
@@ -39,8 +40,8 @@ function opTypeMeta(t) {
 }
 
 /* Структура по умолчанию: с ней сравнивается и дополняется сохранённое.
-   Новые поля (showCryptoInTotal, subscriptions) дозаполняются у уже
-   сохранённых данных автоматически — старые записи не теряются. */
+   Новые поля (showCryptoInTotal, subscriptions, debtors) дозаполняются
+   у уже сохранённых данных автоматически — старые записи не теряются. */
 const DEFAULT_STATE = {
   version: 1,
   settings: {
@@ -80,6 +81,7 @@ const DEFAULT_STATE = {
     operations: []
   },
   subscriptions: [], /* справочный список, на балансы не влияет */
+  debtors: [],       /* справочный список долгов, на балансы не влияет */
   rates: { usdRub: null, crypto: {}, updatedAt: null, lastFetchAt: 0 }
 };
 
@@ -450,8 +452,15 @@ function renderHome() {
      уже переехали с корпоративного счёта на личный, сумма не потерялась */
   const total = b + bb + (showCrypto ? ct.rub : 0);
 
-  /* Баннер-напоминание про экспорт: виден до первого экспорта */
-  $('#export-banner').classList.toggle('hidden', !!state.settings.exportReminderShown);
+  /* Баннер-напоминание про экспорт: виден, пока экспорта не было вообще,
+     и возвращается сам, если с последнего экспорта прошла неделя */
+  const weekMs = 7 * 86400000;
+  const lastExportTs = state.settings.lastExportAt
+    ? new Date(state.settings.lastExportAt).getTime() : 0;
+  const staleExport = lastExportTs > 0 && (Date.now() - lastExportTs > weekMs);
+  const showBanner = staleExport
+    || (!state.settings.exportReminderShown && !lastExportTs);
+  $('#export-banner').classList.toggle('hidden', !showBanner);
 
   /* Большой баланс с однократной анимацией накопления */
   const totalEl = $('#home-total');
@@ -920,7 +929,7 @@ function renderStats() {
       data: {
         labels,
         datasets: [
-          { label: 'Доходs', data: incData, backgroundColor: getCss('--pos') || '#3DDC97', borderRadius: 5, maxBarThickness: 18 },
+          { label: 'Доходы', data: incData, backgroundColor: getCss('--pos') || '#3DDC97', borderRadius: 5, maxBarThickness: 18 },
           { label: 'Расходы', data: expData, backgroundColor: getCss('--neg') || '#FF7A6B', borderRadius: 5, maxBarThickness: 18 }
         ]
       },
@@ -1012,6 +1021,13 @@ function renderStats() {
     : '<div class="empty">Нет трат за период</div>';
 
   /* --- Детали периода --- */
+  /* Норма сбережений: доля доходов, которую вы не потратили за период */
+  const savingsPct = inc > 0 ? ((inc - exp) / inc) * 100 : null;
+  const savingsHTML = savingsPct === null
+    ? '—'
+    : '<span class="' + (savingsPct >= 0 ? 'pos' : 'neg') + '">'
+      + (savingsPct >= 0 ? '' : '−') + fmtNum(Math.abs(savingsPct), 1) + '%</span>';
+
   const expOnly = ops.filter(o => o.type === 'expense');
   const largest = expOnly.slice().sort((a, b) => b.amount - a.amount)[0];
   let largestHTML = '—';
@@ -1048,7 +1064,8 @@ function renderStats() {
   }
 
   $('#stat-details').innerHTML =
-    detRowHTML('Операций за период', String(count))
+    detRowHTML('Норма сбережений', savingsHTML)
+    + detRowHTML('Операций за период', String(count))
     + detRowHTML('Дней с тратами', daysWithSpend + ' из ' + days)
     + detRowHTML('Самая крупная трата', largestHTML)
     + detRowHTML('Самый затратный день', busiestDay
@@ -1123,7 +1140,7 @@ function renderStats() {
 }
 
 /* ============================================================
-   11. ЭКРАН: НАСТРОЙКИ (экспорт, категории, подписки, активы)
+   11. ЭКРАН: НАСТРОЙКИ (экспорт, импорт, категории, подписки, должники, активы)
    ============================================================ */
 
 function catTypeLabel(t) {
@@ -1138,6 +1155,7 @@ function renderSettings() {
   renderCatList('personal');
   renderCatList('business');
   renderSubs();
+  renderDebtors();
   renderAssetList();
 }
 
@@ -1235,6 +1253,174 @@ function deleteSub() {
   renderSettings();
 }
 
+/* --- Должники (справочно) --- */
+
+/* Текущий долг должника: занято минус возвращено */
+function debtorTotal(debtor) {
+  let d = 0;
+  for (const o of debtor.operations) {
+    if (o.type === 'add') d += o.amount;
+    else if (o.type === 'repay') d -= o.amount;
+  }
+  return Math.round(d * 100) / 100;
+}
+
+function renderDebtors() {
+  const list = state.debtors;
+  $('#debtors-list').innerHTML = list.length
+    ? list.map(d =>
+        '<button class="sub-row" data-debtor-id="' + esc(d.id) + '">'
+        + '<span class="op-emoji">' + esc(d.emoji) + '</span>'
+        + '<span class="op-main"><span class="op-title">' + esc(d.name) + '</span>'
+        + '<div class="op-sub">Записей: ' + d.operations.length + '</div></span>'
+        + '<span class="sub-sum"><b>' + fmtRub(debtorTotal(d)) + '</b>'
+        + (debtorTotal(d) > 0 ? '<small>долг</small>' : '<small>погашен</small>')
+        + '</span>'
+        + '</button>'
+      ).join('')
+    : '<div class="empty-inline">Список пуст — добавьте первого должника</div>';
+
+  /* Общий долг по всем должникам */
+  let sum = 0;
+  for (const d of list) sum += Math.max(debtorTotal(d), 0);
+  $('#debtors-total').textContent = list.length
+    ? 'Общий долг: ' + fmtRub(sum)
+    : '';
+}
+
+const DEBTOR_EMOJI_PRESETS = ['👤', '🧑', '👩', '🧔', '👵', '👴', '🙂', '🤝'];
+let debtorEditId = null;
+
+/* Состояние ввода новой долговой записи внутри карточки должника */
+const dtSt = { type: 'add', amountStr: '' };
+
+function openDebtorModal(id) {
+  debtorEditId = id;
+  const d = id ? state.debtors.find(x => x.id === id) : null;
+  $('#debtor-title').textContent = d ? d.name : 'Новый должник';
+  $('#debtor-emoji').value = d ? d.emoji : '👤';
+  $('#debtor-name').value = d ? d.name : '';
+  $('#debtor-comment').value = '';
+  $('#debtor-date').value = nowLocalValue();
+  dtSt.type = 'add';
+  dtSt.amountStr = '';
+
+  $('#debtor-emoji-presets').innerHTML = DEBTOR_EMOJI_PRESETS.map(e =>
+    '<button class="chip" data-emoji="' + e + '" type="button">' + e + '</button>'
+  ).join('');
+
+  $('#debtor-delete').classList.toggle('hidden', !d);
+
+  $('#debtor-ops').innerHTML = '<div class="empty-inline">Долгов ещё нет</div>';
+  $('#debtor-total').textContent = '';
+
+  syncDebtorUI();
+  renderDebtorOps();
+  openModal('modal-debtor');
+}
+
+/* Правление имени и иконки сохраняется в данные */
+function saveDebtorMeta() {
+  const emoji = $('#debtor-emoji').value.trim() || '👤';
+  const name = $('#debtor-name').value.trim();
+
+  if (debtorEditId) {
+    const d = state.debtors.find(x => x.id === debtorEditId);
+    if (d) { d.emoji = emoji; d.name = name || d.name; }
+    return true;
+  }
+
+  /* Новый должник: создаётся, только если имя заполнено */
+  if (!name) return false;
+  const rec = { id: uid('deb'), emoji, name, operations: [] };
+  state.debtors.push(rec);
+  debtorEditId = rec.id;
+  return true;
+}
+
+function syncDebtorUI() {
+  document.querySelectorAll('#debtor-type .seg-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.dtype === dtSt.type));
+  $('#debtor-amount-display').textContent = dtSt.amountStr === '' ? '0' : dtSt.amountStr;
+}
+
+function renderDebtorOps() {
+  const d = debtorEditId ? state.debtors.find(x => x.id === debtorEditId) : null;
+  if (!d) return;
+
+  const sorted = d.operations.slice().sort((a, b) => b.date.localeCompare(a.date));
+  $('#debtor-ops').innerHTML = sorted.length
+    ? sorted.map(o =>
+        '<button class="dop-row" data-dop-id="' + esc(o.id) + '">'
+        + '<b class="' + (o.type === 'add' ? 'neg' : 'pos') + '">'
+        + (o.type === 'add' ? '+' : '−') + fmtRub(o.amount) + '</b>'
+        + '<span>' + esc(o.comment || (o.type === 'add' ? 'долг' : 'возврат')) + '</span>'
+        + '<span class="dop-sub">' + esc(fmtDay(o.date)) + '</span>'
+        + '</button>'
+      ).join('')
+    : '<div class="empty-inline">Долгов ещё нет</div>';
+
+  const total = debtorTotal(d);
+  $('#debtor-total').textContent = total > 0
+    ? 'Долг: ' + fmtRub(total)
+    : (total < 0 ? 'Переплата: ' + fmtRub(Math.abs(total)) : 'Долгов нет');
+}
+
+function saveDebtorOp() {
+  const amount = parseFloat(dtSt.amountStr.replace(',', '.'));
+  if (!isFinite(amount) || amount <= 0) {
+    toast('Введите сумму больше нуля', true); hapticNotify('error'); return;
+  }
+  const dateVal = $('#debtor-date').value;
+  if (!dateVal) { toast('Укажите дату', true); return; }
+
+  if (!saveDebtorMeta()) {
+    toast('Введите имя должника', true);
+    return;
+  }
+  const d = state.debtors.find(x => x.id === debtorEditId);
+
+  d.operations.push({
+    id: uid('dop'),
+    type: dtSt.type,
+    amount: Math.round(amount * 100) / 100,
+    date: dateVal,
+    comment: $('#debtor-comment').value.trim().slice(0, 200)
+  });
+
+  saveState();
+  hapticNotify('success');
+  dtSt.amountStr = '';
+  $('#debtor-comment').value = '';
+  $('#debtor-date').value = nowLocalValue();
+  $('#debtor-title').textContent = d.name;
+  syncDebtorUI();
+  renderDebtorOps();
+  renderDebtors();
+}
+
+function deleteDebtorOp(dopId) {
+  const d = debtorEditId ? state.debtors.find(x => x.id === debtorEditId) : null;
+  if (!d) return;
+  if (!confirm('Удалить эту запись?')) return;
+  d.operations = d.operations.filter(x => x.id !== dopId);
+  saveState();
+  hapticNotify('warning');
+  renderDebtorOps();
+  renderDebtors();
+}
+
+function deleteDebtor() {
+  const d = debtorEditId ? state.debtors.find(x => x.id === debtorEditId) : null;
+  if (!d) return;
+  if (!confirm('Удалить должника «' + d.name + '» со всеми записями?')) return;
+  state.debtors = state.debtors.filter(x => x.id !== debtorEditId);
+  saveState();
+  hapticNotify('warning');
+  closeModal('modal-debtor');
+  renderSettings();
+}
+
 /* --- Крипто-активы --- */
 
 function renderAssetList() {
@@ -1249,7 +1435,150 @@ function renderAssetList() {
 }
 
 /* ============================================================
-   12. МОДАЛКА: ФИАТНАЯ ОПЕРАЦИЯ
+   12. ИМПОРТ ОПЕРАЦИЙ ЧЕРЕЗ ИИ
+   ============================================================ */
+
+/*
+ * Промт собирается динамически: в него вписывается текущий список
+ * личных категорий пользователя, поэтому ИИ сопоставляет траты
+ * с реально существующими категориями.
+ */
+function buildAiPrompt() {
+  const cats = state.categories.personal
+    .map(c => '"' + c.id + '" — ' + c.name + ' (' + catTypeLabel(c.type) + ')')
+    .join('; ');
+  const year = new Date().getFullYear();
+
+  return 'Извлеки из прикреплённых скриншотов или файла банковской выписки все операции (доходы и расходы) и верни результат строго в формате JSON-массива.\n\n'
+    + 'Правила:\n'
+    + '1. Формат каждого элемента массива:\n'
+    + '{"type":"expense","amount":450,"categoryId":"p_food","date":"2026-10-16T19:30","comment":"ужин"}\n'
+    + '2. type: "expense" для трат, "income" для поступлений на счёт.\n'
+    + '3. amount: положительное число в рублях, без пробелов, символа ₽ и кавычек.\n'
+    + '4. date: локальное время в формате YYYY-MM-DDTHH:mm, например 2026-10-16T19:30. Если в выписке указана только дата — ставь время 12:00. Если не указан год — считай, что это ' + year + ' год.\n'
+    + '5. categoryId: выбери один идентификатор из списка ниже, ближайший по смыслу:\n'
+    + cats + '\n'
+    + 'Если ни одна категория не подходит — укажи "none".\n'
+    + '6. comment: кратко перенеси описание операции из выписки (название магазина, получателя или отправителя), не больше 60 символов. Если описания нет — пустая строка "".\n'
+    + '7. Не пропускай операции и не придумывай лишних: перенеси все строки выписки по порядку.\n\n'
+    + 'В ответе выведи ТОЛЬКО JSON-массив, начиная с символа [ и заканчивая ]. Без пояснений, без markdown-обёртки, без текста до или после массива.';
+}
+
+function openPromptModal() {
+  $('#prompt-text').textContent = buildAiPrompt();
+  openModal('modal-prompt');
+}
+
+/* Копирование в буфер: сначала современный API, при отказе — запасной способ */
+async function copyPromptToClipboard() {
+  const text = $('#prompt-text').textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('Промт скопирован');
+    hapticNotify('success');
+    return;
+  } catch (e) { /* WebView может запретить доступ — пробуем запасной способ */ }
+
+  try {
+    const range = document.createRange();
+    range.selectNodeContents($('#prompt-text'));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('copy');
+    sel.removeAllRanges();
+    toast('Промт скопирован');
+    hapticNotify('success');
+  } catch (e) {
+    toast('Не удалось скопировать — выделите текст в боксе и скопируйте вручную', true);
+  }
+}
+
+function openImportModal() {
+  $('#import-text').value = '';
+  openModal('modal-import');
+}
+
+/*
+ * Разбор текста от ИИ: вырезаем markdown-обёртки и весь текст вокруг
+ * массива, парсим и валидируем каждую операцию. Некорректные элементы
+ * пропускаются, у выживших проверяются: сумма, тип, дата, категория.
+ */
+function parseImportedOps(rawText) {
+  let t = String(rawText ?? '').trim();
+  if (!t) throw new Error('empty');
+
+  /* Ответ мог быть обёрнут в ```json ... ``` */
+  const fence = t.match(/```(?:json)?([\s\S]*?)```/i);
+  if (fence) t = fence[1].trim();
+
+  /* Берём всё между первой [ и последней ] — ИИ часто добавляет текст вокруг */
+  const start = t.indexOf('[');
+  const end = t.lastIndexOf(']');
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('no array');
+  }
+  t = t.slice(start, end + 1);
+
+  let arr;
+  try {
+    arr = JSON.parse(t);
+  } catch (e) {
+    throw new Error('bad json');
+  }
+  if (!Array.isArray(arr)) throw new Error('not array');
+
+  const valid = [];
+  for (const o of arr) {
+    if (!o || typeof o !== 'object') continue;
+
+    const amount = Math.round(Math.abs(Number(o.amount)) * 100) / 100;
+    if (!isFinite(amount) || amount <= 0) continue;
+
+    const type = (o.type === 'income') ? 'income' : 'expense';
+
+    /* Дата: принимаем полный формат и дату без времени; остальное — сейчас */
+    let date = String(o.date ?? '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) date = date + 'T12:00';
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(date) || isNaN(new Date(date))) {
+      date = nowLocalValue();
+    }
+
+    /* Категория: только реально существующая у пользователя */
+    let categoryId = null;
+    const cid = String(o.categoryId ?? '').trim();
+    if (cid && cid !== 'none' && findCat('personal', cid)) categoryId = cid;
+
+    const comment = String(o.comment ?? '').trim().slice(0, 200);
+
+    valid.push({ id: uid('op'), type, amount, categoryId, date, comment });
+  }
+  if (!valid.length) throw new Error('no valid ops');
+  return valid;
+}
+
+function doImport() {
+  let ops;
+  try {
+    ops = parseImportedOps($('#import-text').value);
+  } catch (e) {
+    toast('Не удалось разобрать текст — вставьте ответ ИИ целиком', true);
+    hapticNotify('error');
+    return;
+  }
+
+  if (!confirm('Добавить ' + ops.length + ' операций на личный счёт?')) return;
+
+  for (const o of ops) state.personal.operations.push(o);
+  saveState();
+  hapticNotify('success');
+  closeModal('modal-import');
+  refreshAfterDataChange();
+  toast('Добавлено операций: ' + ops.length);
+}
+
+/* ============================================================
+   13. МОДАЛКА: ФИАТНАЯ ОПЕРАЦИЯ
    ============================================================ */
 
 const opSt = {
@@ -1427,7 +1756,7 @@ function deleteOp() {
 }
 
 /* ============================================================
-   13. МОДАЛКА: КРИПТО-ОПЕРАЦИЯ
+   14. МОДАЛКА: КРИПТО-ОПЕРАЦИЯ
    ============================================================ */
 
 const crSt = {
@@ -1441,7 +1770,8 @@ function openCryptoModal(opts = {}) {
   crSt.editId = opts.editId || null;
   crSt.type = 'add';
   crSt.amountStr = '';
-  crSt.assetId = state.crypto.assets.length ? state.crypto.assets[0].id : null;
+  crSt.assetId = opts.assetId
+    || (crSt.editId ? null : (state.crypto.assets.length ? state.crypto.assets[0].id : null));
 
   if (crSt.editId) {
     const o = state.crypto.operations.find(x => x.id === crSt.editId);
@@ -1590,7 +1920,7 @@ function deleteCryptoOp() {
 }
 
 /* ============================================================
-   14. ЦИФРОВАЯ КЛАВИАТУРА
+   15. ЦИФРОВАЯ КЛАВИАТУРА
    ============================================================ */
 
 function buildKeypad(el) {
@@ -1622,7 +1952,7 @@ function pressKey(k, st, maxDec) {
 }
 
 /* ============================================================
-   15. МОДАЛКА: КАТЕГОРИЯ
+   16. МОДАЛКА: КАТЕГОРИЯ
    ============================================================ */
 
 const CAT_EMOJI_PRESETS = ['🍔', '🚌', '🏠', '🎮', '💊', '🛍️', '💼', '📦', '✈️', '🎁', '☕', '🐶'];
@@ -1675,7 +2005,7 @@ function deleteCat() {
 }
 
 /* ============================================================
-   16. МОДАЛКА: КРИПТО-АКТИВ
+   17. МОДАЛКА: КРИПТО-АКТИВ
    ============================================================ */
 
 let assetEditId = null;
@@ -1734,7 +2064,7 @@ function deleteAsset() {
 }
 
 /* ============================================================
-   17. ЭКСПОРТ / ИМПОРТ / СТИРАНИЕ
+   18. ЭКСПОРТ / ИМПОРТ / СТИРАНИЕ
    ============================================================ */
 
 function exportData() {
@@ -1803,7 +2133,7 @@ function wipeAll() {
 }
 
 /* ============================================================
-   18. ТОСТ И МОДАЛКИ
+   19. ТОСТ И МОДАЛКИ
    ============================================================ */
 
 let toastTimer = null;
@@ -1822,6 +2152,15 @@ function openModal(id) {
 }
 
 function closeModal(id) {
+  /* Карточка должника при закрытии сохраняет правки имени и иконки */
+  if (id === 'modal-debtor') {
+    const name = $('#debtor-name').value.trim();
+    if (name) {
+      saveDebtorMeta();
+      saveState();
+      renderDebtors();
+    }
+  }
   const m = $('#' + id);
   if (m) m.classList.remove('open');
   if (!document.querySelector('.modal.open')) {
@@ -1831,7 +2170,7 @@ function closeModal(id) {
 }
 
 /* ============================================================
-   19. ОБНОВЛЕНИЕ КОТИРОВОК ВРУЧНУЮ
+   20. ОБНОВЛЕНИЕ КОТИРОВОК ВРУЧНУЮ
    ============================================================ */
 
 async function refreshRatesManual() {
@@ -1860,7 +2199,7 @@ async function refreshRatesManual() {
 }
 
 /* ============================================================
-   20. НАЗНАЧЕНИЕ ОБРАБОТЧИКОВ
+   21. НАЗНАЧЕНИЕ ОБРАБОТЧИКОВ
    ============================================================ */
 
 function bindEvents() {
@@ -1931,6 +2270,11 @@ function bindEvents() {
       }
       return;
     }
+    const dopRow = e.target.closest('.dop-row');
+    if (dopRow) {
+      deleteDebtorOp(dopRow.dataset.dopId);
+      return;
+    }
     const catRow = e.target.closest('.cat-row');
     if (catRow) {
       openCatModal(catRow.dataset.catScope, catRow.dataset.catId);
@@ -1943,7 +2287,9 @@ function bindEvents() {
     }
     const subRow = e.target.closest('.sub-row');
     if (subRow) {
-      openSubModal(subRow.dataset.subId);
+      /* Строка может быть и подпиской, и должником — различаем по атрибуту */
+      if (subRow.dataset.debtorId) openDebtorModal(subRow.dataset.debtorId);
+      else openSubModal(subRow.dataset.subId);
       return;
     }
     const closer = e.target.closest('.modal-close');
@@ -2044,6 +2390,30 @@ function bindEvents() {
   $('#cr-save').addEventListener('click', saveCryptoOp);
   $('#cr-delete').addEventListener('click', deleteCryptoOp);
 
+  /* --- Модалка должника --- */
+  $('#debtor-emoji-presets').addEventListener('click', e => {
+    const chip = e.target.closest('.chip');
+    if (chip && chip.dataset.emoji) $('#debtor-emoji').value = chip.dataset.emoji;
+  });
+  document.querySelectorAll('#debtor-type .seg-btn').forEach(b =>
+    b.addEventListener('click', () => {
+      if (b.dataset.dtype !== dtSt.type) {
+        dtSt.type = b.dataset.dtype;
+        hapticSelect();
+        syncDebtorUI();
+      }
+    }));
+  $('#debtor-keypad').addEventListener('click', e => {
+    const key = e.target.closest('.key');
+    if (key) {
+      pressKey(key.dataset.key, dtSt, 2);
+      hapticTap();
+      $('#debtor-amount-display').textContent = dtSt.amountStr === '' ? '0' : dtSt.amountStr;
+    }
+  });
+  $('#debtor-save').addEventListener('click', saveDebtorOp);
+  $('#debtor-delete').addEventListener('click', deleteDebtor);
+
   /* --- Модалка категории --- */
   $('#cat-emoji-presets').addEventListener('click', e => {
     const chip = e.target.closest('.chip');
@@ -2064,6 +2434,12 @@ function bindEvents() {
   $('#as-save').addEventListener('click', saveAsset);
   $('#as-delete').addEventListener('click', deleteAsset);
 
+  /* --- Импорт через ИИ --- */
+  $('#btn-show-prompt').addEventListener('click', openPromptModal);
+  $('#btn-copy-prompt').addEventListener('click', copyPromptToClipboard);
+  $('#btn-paste-import').addEventListener('click', openImportModal);
+  $('#btn-do-import').addEventListener('click', doImport);
+
   /* --- Настройки --- */
   $('#btn-export').addEventListener('click', exportData);
   $('#btn-import').addEventListener('click', () => $('#import-file').click());
@@ -2074,12 +2450,13 @@ function bindEvents() {
   $('#btn-add-cat-personal').addEventListener('click', () => openCatModal('personal', null));
   $('#btn-add-cat-business').addEventListener('click', () => openCatModal('business', null));
   $('#btn-add-sub').addEventListener('click', () => openSubModal(null));
+  $('#btn-add-debtor').addEventListener('click', () => openDebtorModal(null));
   $('#btn-add-asset').addEventListener('click', () => openAssetModal(null));
   $('#btn-wipe').addEventListener('click', wipeAll);
 }
 
 /* ============================================================
-   21. ЗАПУСК
+   22. ЗАПУСК
    ============================================================ */
 
 function init() {
@@ -2087,6 +2464,7 @@ function init() {
   initTelegram();
   buildKeypad($('#op-keypad'));
   buildKeypad($('#cr-keypad'));
+  buildKeypad($('#debtor-keypad'));
   bindEvents();
   renderHome();
   renderHistory();
