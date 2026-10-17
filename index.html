@@ -27,7 +27,7 @@
         </button>
       </div>
 
-      <!-- Напоминание про экспорт (показывается до первого экспорта) -->
+      <!-- Напоминание про экспорт: возвращается, если с последнего экспорта прошла неделя -->
       <div class="banner hidden" id="export-banner">
         <div class="banner-text">Данные хранятся только в этом браузере. Делайте экспорт в файл хотя бы раз в неделю — это единственная резервная копия.</div>
         <div class="banner-actions">
@@ -42,7 +42,7 @@
           <div class="tb-row"><span>Личные</span><b id="home-personal">0 ₽</b></div>
           <div class="tb-row"><span>Корпоративный</span><b id="home-business">0 ₽</b></div>
           <div class="tb-row hidden" id="home-debt-row">
-            <span>Долг перед корпом</span><b class="neg" id="home-debt">0 ₽</b>
+            <span>Долг перед корпом</span><b id="home-debt">0 ₽</b>
           </div>
           <div class="tb-row">
             <span>Крипта</span>
@@ -224,6 +224,14 @@
         <input type="file" id="import-file" accept=".json,application/json" class="visually-hidden">
       </div>
 
+      <!-- Импорт операций из банковской выписки через ИИ -->
+      <div class="set-card">
+        <h3>Импорт из банка (через ИИ)</h3>
+        <p class="hint">Перенос доходов и расходов из скриншотов или файла выписки. Шаги: скопируйте промт, вставьте его в любой ИИ вместе со скриншотами выписки, получите ответ и вставьте его сюда целиком.</p>
+        <button class="btn-secondary" id="btn-show-prompt">Шаг 1. Скопировать промт для ИИ</button>
+        <button class="btn-secondary" id="btn-paste-import">Шаг 2. Вставить результат ИИ</button>
+      </div>
+
       <div class="set-card">
         <div class="card-head">
           <h3>Категории: личные</h3>
@@ -249,6 +257,17 @@
         <p class="hint">Справочный список регулярных платежей. На счета и балансы не влияет.</p>
         <div id="subs-list"></div>
         <div class="hint center" id="subs-total"></div>
+      </div>
+
+      <!-- Справочный список должников: на балансы не влияет -->
+      <div class="set-card">
+        <div class="card-head">
+          <h3>Должники</h3>
+          <button class="mini-btn" id="btn-add-debtor">Добавить</button>
+        </div>
+        <p class="hint">Справочный список личных долгов. На счета и балансы не влияет.</p>
+        <div id="debtors-list"></div>
+        <div class="hint center" id="debtors-total"></div>
       </div>
 
       <div class="set-card">
@@ -389,7 +408,7 @@
     <div class="modal" id="modal-cat">
       <div class="modal-sheet">
         <div class="modal-head">
-          <h2 id="cat-title">Новая категорia</h2>
+          <h2 id="cat-title">Новая категория</h2>
           <button class="icon-btn modal-close" data-close="modal-cat" aria-label="Закрыть">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
           </button>
@@ -496,6 +515,95 @@
         <div class="modal-actions">
           <button class="btn-danger hidden" id="sub-delete">Удалить подписку</button>
           <button class="btn-primary" id="sub-save">Сохранить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====================== МОДАЛКА: ДОЛЖНИК ====================== -->
+    <div class="modal" id="modal-debtor">
+      <div class="modal-sheet">
+        <div class="modal-head">
+          <h2 id="debtor-title">Новый должник</h2>
+          <button class="icon-btn modal-close" data-close="modal-debtor" aria-label="Закрыть">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+
+        <!-- Имя и иконка правятся прямо здесь, сохраняются при записи и закрытии -->
+        <div class="debtor-meta">
+          <input type="text" id="debtor-emoji" class="text-input emoji-input" maxlength="4" aria-label="Иконка">
+          <input type="text" id="debtor-name" class="text-input" placeholder="Имя должника" maxlength="40">
+        </div>
+        <div class="chips" id="debtor-emoji-presets"></div>
+
+        <!-- История долгов этого должника -->
+        <div id="debtor-ops"></div>
+        <div class="hint center" id="debtor-total"></div>
+
+        <!-- Новая запись: долг или возврат -->
+        <div class="seg" id="debtor-type">
+          <button class="seg-btn active" data-dtype="add">Занял</button>
+          <button class="seg-btn" data-dtype="repay">Вернул</button>
+        </div>
+
+        <div class="amount-display" id="debtor-amount-display">0</div>
+
+        <div class="op-meta">
+          <div class="field-row">
+            <label for="debtor-date">Дата</label>
+            <input type="datetime-local" id="debtor-date">
+          </div>
+          <div class="field-row">
+            <label for="debtor-comment">Комментарий</label>
+            <input type="text" id="debtor-comment" class="text-input" placeholder="—" maxlength="200">
+          </div>
+        </div>
+
+        <div class="keypad" id="debtor-keypad"></div>
+
+        <div class="modal-actions">
+          <button class="btn-danger" id="debtor-delete">Удалить должника</button>
+          <button class="btn-primary" id="debtor-save">Записать</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====================== МОДАЛКА: ПРОМТ ДЛЯ ИИ ====================== -->
+    <div class="modal" id="modal-prompt">
+      <div class="modal-sheet">
+        <div class="modal-head">
+          <h2>Промт для ИИ</h2>
+          <button class="icon-btn modal-close" data-close="modal-prompt" aria-label="Закрыть">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+
+        <p class="hint">Скопируйте текст ниже, вставьте его в ИИ вместе со скриншотами или файлом выписки. Ответ ИИ вставьте на шаге 2 в настройках.</p>
+
+        <div class="prompt-box" id="prompt-text"></div>
+
+        <div class="modal-actions">
+          <button class="btn-primary" id="btn-copy-prompt">Скопировать промт</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====================== МОДАЛКА: ВСТАВКА РЕЗУЛЬТАТА ИИ ====================== -->
+    <div class="modal" id="modal-import">
+      <div class="modal-sheet">
+        <div class="modal-head">
+          <h2>Вставить результат ИИ</h2>
+          <button class="icon-btn modal-close" data-close="modal-import" aria-label="Закрыть">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+
+        <p class="hint">Вставьте ответ ИИ целиком, без изменений. Операции добавятся на личный счёт после подтверждения. Повторный импорт той же выписки создаст дубликаты.</p>
+
+        <textarea id="import-text" class="import-area" rows="8" placeholder="Вставьте сюда ответ ИИ…"></textarea>
+
+        <div class="modal-actions">
+          <button class="btn-primary" id="btn-do-import">Импортировать операции</button>
         </div>
       </div>
     </div>
