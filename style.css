@@ -505,6 +505,65 @@ h3 { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
 .sub-sum b { font-size: 13.5px; font-weight: 700; font-variant-numeric: tabular-nums; display: block; }
 .sub-sum small { font-size: 11px; color: var(--muted); }
 
+/* ---------- Должники ---------- */
+
+.debtor-meta {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.debtor-meta .emoji-input { width: 64px; flex-shrink: 0; }
+.debtor-meta .text-input:not(.emoji-input) { flex: 1; min-width: 0; }
+
+.dop-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  width: 100%;
+  background: none;
+  border-left: none; border-right: none; border-top: none;
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+}
+.dop-row:last-child { border-bottom: none; }
+.dop-row b { font-variant-numeric: tabular-nums; font-weight: 700; flex-shrink: 0; }
+.dop-row .dop-sub { color: var(--muted); font-size: 11.5px; margin-left: auto; flex-shrink: 0; }
+
+/* ---------- Промт и импорт ---------- */
+
+.prompt-box {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  user-select: all;
+  -webkit-user-select: all;
+}
+
+.import-area {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 12px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 140px;
+}
+.import-area:focus { border-color: var(--accent); }
+
 .btn-primary {
   width: 100%;
   background: var(--accent);
