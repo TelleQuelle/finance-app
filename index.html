@@ -41,7 +41,16 @@
         <div class="total-breakdown">
           <div class="tb-row"><span>Личные</span><b id="home-personal">0 ₽</b></div>
           <div class="tb-row"><span>Корпоративный</span><b id="home-business">0 ₽</b></div>
-          <div class="tb-row"><span>Крипта</span><b id="home-crypto">0 ₽</b></div>
+          <div class="tb-row hidden" id="home-debt-row">
+            <span>Долг перед корпом</span><b class="neg" id="home-debt">0 ₽</b>
+          </div>
+          <div class="tb-row">
+            <span>Крипта</span>
+            <span class="tb-right">
+              <b id="home-crypto" class="dim">••••</b>
+              <button class="switch" id="crypto-visibility" type="button" aria-label="Показать крипту в общем балансе"><i></i></button>
+            </span>
+          </div>
         </div>
       </div>
 
@@ -77,6 +86,16 @@
 
       <div class="hist-controls">
         <select id="hist-month" class="grow"></select>
+      </div>
+
+      <!-- Карточка задолженности: только для корпоративного счёта -->
+      <div class="debt-card hidden" id="debt-card">
+        <div class="debt-main">
+          <span>Задолженность перед счётом</span>
+          <b id="debt-amount">0 ₽</b>
+          <span id="debt-zero" class="hidden">Задолженности нет</span>
+        </div>
+        <button class="mini-btn accent" id="btn-repay" type="button">Вернуть долг</button>
       </div>
 
       <div class="balance-strip"><span>Баланс счёта</span><b id="hist-balance">0 ₽</b></div>
@@ -136,6 +155,20 @@
         </div>
       </div>
 
+      <!-- Сводные показатели периода -->
+      <div class="kpi-grid">
+        <div class="kpi"><span>Доходы</span><b id="kpi-inc" class="pos">0 ₽</b></div>
+        <div class="kpi"><span>Расходы</span><b id="kpi-exp">0 ₽</b></div>
+        <div class="kpi"><span>Итог</span><b id="kpi-net">0 ₽</b></div>
+        <div class="kpi"><span>В среднем в день</span><b id="kpi-avgday">0 ₽</b></div>
+      </div>
+
+      <!-- Сравнение с предыдущим периодом -->
+      <div class="set-card" id="compare-card">
+        <h3 id="compare-title">Против предыдущего периода</h3>
+        <div id="stat-compare"></div>
+      </div>
+
       <div class="chart-box">
         <h3>Расходы по категориям</h3>
         <div class="chart-wrap"><canvas id="chart-doughnut"></canvas></div>
@@ -148,9 +181,26 @@
         <div class="chart-empty hidden" id="months-empty">Нет данных за выбранный период</div>
       </div>
 
+      <div class="chart-box">
+        <h3>Расходы по дням недели</h3>
+        <div class="chart-wrap"><canvas id="chart-dow"></canvas></div>
+        <div class="chart-empty hidden" id="dow-empty">Нет трат за выбранный период</div>
+      </div>
+
       <div class="set-card">
         <h3>Топ-5 категорий по тратам</h3>
         <div id="stat-top"></div>
+      </div>
+
+      <div class="set-card">
+        <h3>Детали периода</h3>
+        <div id="stat-details"></div>
+      </div>
+
+      <!-- Блок корпоративного счёта: виден только при scope=business -->
+      <div class="set-card hidden" id="stat-debt-card">
+        <h3>Корпоративный счёт: долг</h3>
+        <div id="stat-debt"></div>
       </div>
 
       <div class="set-card">
@@ -188,6 +238,17 @@
           <button class="mini-btn" id="btn-add-cat-business">Добавить</button>
         </div>
         <div id="cats-business"></div>
+      </div>
+
+      <!-- Справочный список подписок: на балансы не влияет -->
+      <div class="set-card">
+        <div class="card-head">
+          <h3>Подписки</h3>
+          <button class="mini-btn" id="btn-add-sub">Добавить</button>
+        </div>
+        <p class="hint">Справочный список регулярных платежей. На счета и балансы не влияет.</p>
+        <div id="subs-list"></div>
+        <div class="hint center" id="subs-total"></div>
       </div>
 
       <div class="set-card">
@@ -249,21 +310,31 @@
           <button class="seg-btn" data-scope="business">Корпоративный</button>
         </div>
 
+        <!-- Для корпоративного счёта добавляются типы «Перевод» и «Списание» -->
         <div class="seg" id="op-type">
-          <button class="seg-btn active neg" data-type="expense">Расход</button>
+          <button class="seg-btn active" data-type="expense">Расход</button>
           <button class="seg-btn" data-type="income">Доход</button>
+          <button class="seg-btn biz-only hidden" data-type="transfer">Перевод</button>
+          <button class="seg-btn biz-only hidden" data-type="drawout">Списание</button>
         </div>
 
         <div class="amount-display" id="op-amount-display">0</div>
 
-        <div class="chips" id="op-cats"></div>
+        <div class="chips compact" id="op-cats"></div>
 
-        <div class="field-row">
-          <label for="op-date">Дата и время</label>
-          <input type="datetime-local" id="op-date">
+        <!-- Информационная строка для переводов/списаний/возвратов -->
+        <div class="op-note hidden" id="op-note"></div>
+
+        <div class="op-meta">
+          <div class="field-row">
+            <label for="op-date">Дата</label>
+            <input type="datetime-local" id="op-date">
+          </div>
+          <div class="field-row">
+            <label for="op-comment">Комментарий</label>
+            <input type="text" id="op-comment" class="text-input" placeholder="—" maxlength="200">
+          </div>
         </div>
-
-        <input type="text" id="op-comment" class="text-input" placeholder="Комментарий (необязательно)" maxlength="200">
 
         <div class="keypad" id="op-keypad"></div>
 
@@ -284,7 +355,7 @@
           </button>
         </div>
 
-        <div class="chips" id="cr-assets"></div>
+        <div class="chips compact" id="cr-assets"></div>
 
         <div class="seg" id="cr-type">
           <button class="seg-btn active pos" data-type="add">Добавил</button>
@@ -294,12 +365,16 @@
         <div class="amount-display" id="cr-amount-display">0</div>
         <div class="price-hint" id="cr-price-hint"></div>
 
-        <div class="field-row">
-          <label for="cr-date">Дата и время</label>
-          <input type="datetime-local" id="cr-date">
+        <div class="op-meta">
+          <div class="field-row">
+            <label for="cr-date">Дата</label>
+            <input type="datetime-local" id="cr-date">
+          </div>
+          <div class="field-row">
+            <label for="cr-comment">Комментарий</label>
+            <input type="text" id="cr-comment" class="text-input" placeholder="—" maxlength="200">
+          </div>
         </div>
-
-        <input type="text" id="cr-comment" class="text-input" placeholder="Комментарий (необязательно)" maxlength="200">
 
         <div class="keypad" id="cr-keypad"></div>
 
@@ -314,7 +389,7 @@
     <div class="modal" id="modal-cat">
       <div class="modal-sheet">
         <div class="modal-head">
-          <h2 id="cat-title">Новая категория</h2>
+          <h2 id="cat-title">Новая категорia</h2>
           <button class="icon-btn modal-close" data-close="modal-cat" aria-label="Закрыть">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
           </button>
@@ -380,6 +455,47 @@
         <div class="modal-actions">
           <button class="btn-danger hidden" id="as-delete">Удалить актив</button>
           <button class="btn-primary" id="as-save">Сохранить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====================== МОДАЛКА: ПОДПИСКА ====================== -->
+    <div class="modal" id="modal-sub">
+      <div class="modal-sheet">
+        <div class="modal-head">
+          <h2 id="sub-title">Новая подписка</h2>
+          <button class="icon-btn modal-close" data-close="modal-sub" aria-label="Закрыть">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+
+        <div class="field-row">
+          <label for="sub-emoji">Иконка (эмодзи)</label>
+          <input type="text" id="sub-emoji" class="text-input emoji-input" maxlength="4">
+          <div class="chips" id="sub-emoji-presets"></div>
+        </div>
+
+        <div class="field-row">
+          <label for="sub-name">Название</label>
+          <input type="text" id="sub-name" class="text-input" placeholder="Например, Netflix" maxlength="40">
+        </div>
+
+        <div class="field-row">
+          <label for="sub-amount">Сумма, ₽</label>
+          <input type="text" id="sub-amount" class="text-input" inputmode="decimal" placeholder="450" maxlength="12">
+        </div>
+
+        <div class="field-row">
+          <label for="sub-period">Период</label>
+          <select id="sub-period">
+            <option value="month">В месяц</option>
+            <option value="year">В год</option>
+          </select>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn-danger hidden" id="sub-delete">Удалить подписку</button>
+          <button class="btn-primary" id="sub-save">Сохранить</button>
         </div>
       </div>
     </div>
