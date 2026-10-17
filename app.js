@@ -8,6 +8,7 @@
    Баланс личного счёта = личные операции + переводы с корпа − возвраты долга.
    Задолженность — справочная величина: из общего баланса не вычитается.
    Должники и подписки — справочные списки, на балансы не влияют.
+   Есть массовое удаление операций за выбранный период.
    ============================================================ */
 
 'use strict';
@@ -17,7 +18,7 @@
    ============================================================ */
 
 const LS_KEY = 'finapp_data_v1';     // основной ключ хранения
-const LS_BACKUP = 'finapp_backup_v1'; // резервная копия перед импортом/стиранием
+const LS_BACKUP = 'finapp_backup_v1'; // резервная копия перед импортом/стиранием/массовым удалением
 
 /* Палитра для кольцевой диаграммы */
 const PALETTE = ['#FFC53D', '#3DDC97', '#5EC8F2', '#B79CFF', '#FF7A6B', '#F2A2C0', '#6BD5C8', '#E8D38A'];
@@ -1140,7 +1141,8 @@ function renderStats() {
 }
 
 /* ============================================================
-   11. ЭКРАН: НАСТРОЙКИ (экспорт, импорт, категории, подписки, должники, активы)
+   11. ЭКРАН: НАСТРОЙКИ (экспорт, категории, подписки, должники, активы,
+       массовое удаление)
    ============================================================ */
 
 function catTypeLabel(t) {
@@ -1157,6 +1159,7 @@ function renderSettings() {
   renderSubs();
   renderDebtors();
   renderAssetList();
+  renderBulkDelete();
 }
 
 function renderCatList(scope) {
@@ -1319,7 +1322,7 @@ function openDebtorModal(id) {
   openModal('modal-debtor');
 }
 
-/* Правление имени и иконки сохраняется в данные */
+/* Правка имени и иконки сохраняется в данные */
 function saveDebtorMeta() {
   const emoji = $('#debtor-emoji').value.trim() || '👤';
   const name = $('#debtor-name').value.trim();
@@ -1435,146 +1438,90 @@ function renderAssetList() {
 }
 
 /* ============================================================
-   12. ИМПОРТ ОПЕРАЦИЙ ЧЕРЕЗ ИИ
+   12. МАССОВОЕ УДАЛЕНИЕ ОПЕРАЦИЙ ЗА ПЕРИОД
    ============================================================ */
 
-/*
- * Промт собирается динамически: в него вписывается текущий список
- * личных категорий пользователя, поэтому ИИ сопоставляет траты
- * с реально существующими категориями.
- */
-function buildAiPrompt() {
-  const cats = state.categories.personal
-    .map(c => '"' + c.id + '" — ' + c.name + ' (' + catTypeLabel(c.type) + ')')
-    .join('; ');
-  const year = new Date().getFullYear();
-
-  return 'Извлеки из прикреплённых скриншотов или файла банковской выписки все операции (доходы и расходы) и верни результат строго в формате JSON-массива.\n\n'
-    + 'Правила:\n'
-    + '1. Формат каждого элемента массива:\n'
-    + '{"type":"expense","amount":450,"categoryId":"p_food","date":"2026-10-16T19:30","comment":"ужин"}\n'
-    + '2. type: "expense" для трат, "income" для поступлений на счёт.\n'
-    + '3. amount: положительное число в рублях, без пробелов, символа ₽ и кавычек.\n'
-    + '4. date: локальное время в формате YYYY-MM-DDTHH:mm, например 2026-10-16T19:30. Если в выписке указана только дата — ставь время 12:00. Если не указан год — считай, что это ' + year + ' год.\n'
-    + '5. categoryId: выбери один идентификатор из списка ниже, ближайший по смыслу:\n'
-    + cats + '\n'
-    + 'Если ни одна категория не подходит — укажи "none".\n'
-    + '6. comment: кратко перенеси описание операции из выписки (название магазина, получателя или отправителя), не больше 60 символов. Если описания нет — пустая строка "".\n'
-    + '7. Не пропускай операции и не придумывай лишних: перенеси все строки выписки по порядку.\n\n'
-    + 'В ответе выведи ТОЛЬКО JSON-массив, начиная с символа [ и заканчивая ]. Без пояснений, без markdown-обёртки, без текста до или после массива.';
-}
-
-function openPromptModal() {
-  $('#prompt-text').textContent = buildAiPrompt();
-  openModal('modal-prompt');
-}
-
-/* Копирование в буфер: сначала современный API, при отказе — запасной способ */
-async function copyPromptToClipboard() {
-  const text = $('#prompt-text').textContent;
-  try {
-    await navigator.clipboard.writeText(text);
-    toast('Промт скопирован');
-    hapticNotify('success');
-    return;
-  } catch (e) { /* WebView может запретить доступ — пробуем запасной способ */ }
-
-  try {
-    const range = document.createRange();
-    range.selectNodeContents($('#prompt-text'));
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-    document.execCommand('copy');
-    sel.removeAllRanges();
-    toast('Промт скопирован');
-    hapticNotify('success');
-  } catch (e) {
-    toast('Не удалось скопировать — выделите текст в боксе и скопируйте вручную', true);
-  }
-}
-
-function openImportModal() {
-  $('#import-text').value = '';
-  openModal('modal-import');
-}
+const bdSt = { scope: 'all', period: 'month' };
 
 /*
- * Разбор текста от ИИ: вырезаем markdown-обёртки и весь текст вокруг
- * массива, парсим и валидируем каждую операцию. Некорректные элементы
- * пропускаются, у выживших проверяются: сумма, тип, дата, категория.
+ * Диапазон выбранного периода: start — с какого момента (null = без ограничения),
+ * end — по какой (null = без верхней границы). «Прошлый месяц» — единственный
+ * период с обеими границами, остальные открыты в сторону будущего.
  */
-function parseImportedOps(rawText) {
-  let t = String(rawText ?? '').trim();
-  if (!t) throw new Error('empty');
-
-  /* Ответ мог быть обёрнут в ```json ... ``` */
-  const fence = t.match(/```(?:json)?([\s\S]*?)```/i);
-  if (fence) t = fence[1].trim();
-
-  /* Берём всё между первой [ и последней ] — ИИ часто добавляет текст вокруг */
-  const start = t.indexOf('[');
-  const end = t.lastIndexOf(']');
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error('no array');
+function bulkRange() {
+  const now = new Date();
+  if (bdSt.period === 'prev') {
+    return {
+      start: toLocal(new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0)),
+      end: toLocal(new Date(now.getFullYear(), now.getMonth(), 1, 0, 0))
+    };
   }
-  t = t.slice(start, end + 1);
-
-  let arr;
-  try {
-    arr = JSON.parse(t);
-  } catch (e) {
-    throw new Error('bad json');
+  if (bdSt.period === 'month') {
+    return { start: toLocal(new Date(now.getFullYear(), now.getMonth(), 1, 0, 0)), end: null };
   }
-  if (!Array.isArray(arr)) throw new Error('not array');
-
-  const valid = [];
-  for (const o of arr) {
-    if (!o || typeof o !== 'object') continue;
-
-    const amount = Math.round(Math.abs(Number(o.amount)) * 100) / 100;
-    if (!isFinite(amount) || amount <= 0) continue;
-
-    const type = (o.type === 'income') ? 'income' : 'expense';
-
-    /* Дата: принимаем полный формат и дату без времени; остальное — сейчас */
-    let date = String(o.date ?? '').trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) date = date + 'T12:00';
-    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(date) || isNaN(new Date(date))) {
-      date = nowLocalValue();
-    }
-
-    /* Категория: только реально существующая у пользователя */
-    let categoryId = null;
-    const cid = String(o.categoryId ?? '').trim();
-    if (cid && cid !== 'none' && findCat('personal', cid)) categoryId = cid;
-
-    const comment = String(o.comment ?? '').trim().slice(0, 200);
-
-    valid.push({ id: uid('op'), type, amount, categoryId, date, comment });
+  if (bdSt.period === '3m') {
+    return { start: toLocal(new Date(now.getFullYear(), now.getMonth() - 2, 1, 0, 0)), end: null };
   }
-  if (!valid.length) throw new Error('no valid ops');
-  return valid;
+  if (bdSt.period === 'year') {
+    return { start: toLocal(new Date(now.getFullYear(), 0, 1, 0, 0)), end: null };
+  }
+  return { start: null, end: null }; /* всё время */
 }
 
-function doImport() {
-  let ops;
-  try {
-    ops = parseImportedOps($('#import-text').value);
-  } catch (e) {
-    toast('Не удалось разобрать текст — вставьте ответ ИИ целиком', true);
-    hapticNotify('error');
-    return;
-  }
+/* Список операций, попадающих под текущие счёт и период */
+function bulkOpsList() {
+  const r = bulkRange();
+  const pick = ops => ops.filter(o =>
+    (!r.start || o.date >= r.start) && (!r.end || o.date < r.end));
+  if (bdSt.scope === 'personal') return pick(state.personal.operations);
+  if (bdSt.scope === 'business') return pick(state.business.operations);
+  if (bdSt.scope === 'crypto') return pick(state.crypto.operations);
+  return [
+    ...pick(state.personal.operations),
+    ...pick(state.business.operations),
+    ...pick(state.crypto.operations)
+  ];
+}
 
-  if (!confirm('Добавить ' + ops.length + ' операций на личный счёт?')) return;
+/* Перерисовка блока массового удаления: активные кнопки и счётчик */
+function renderBulkDelete() {
+  document.querySelectorAll('#bulk-scope .seg-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.bscope === bdSt.scope));
+  $('#bulk-period').value = bdSt.period;
+  const n = bulkOpsList().length;
+  $('#bulk-count').textContent = n
+    ? 'Найдено операций: ' + n
+    : 'Операций за период нет';
+}
 
-  for (const o of ops) state.personal.operations.push(o);
+function bulkDelete() {
+  const ops = bulkOpsList();
+  if (!ops.length) { toast('Операций за период нет', true); return; }
+
+  const scopeName = bdSt.scope === 'personal' ? 'личные'
+    : bdSt.scope === 'business' ? 'корпоративный счёт'
+    : bdSt.scope === 'crypto' ? 'крипта' : 'все счета';
+  const periodName = bdSt.period === 'month' ? 'текущий месяц'
+    : bdSt.period === 'prev' ? 'прошлый месяц'
+    : bdSt.period === '3m' ? 'последние 3 месяца'
+    : bdSt.period === 'year' ? 'текущий год' : 'всё время';
+
+  if (!confirm('Будет удалено ' + ops.length + ' операций (' + scopeName + ', ' + periodName + '). Действие необратимо. Удалить?')) return;
+  if (bdSt.period === 'all' && !confirm('Удаление за всё время. Точно продолжить?')) return;
+
+  /* Страховка: перед удалением сохраняем текущее состояние во внутреннюю копию */
+  try { localStorage.setItem(LS_BACKUP, JSON.stringify(state)); } catch (e) {}
+
+  const ids = new Set(ops.map(o => o.id));
+  state.personal.operations = state.personal.operations.filter(x => !ids.has(x.id));
+  state.business.operations = state.business.operations.filter(x => !ids.has(x.id));
+  state.crypto.operations = state.crypto.operations.filter(x => !ids.has(x.id));
+
   saveState();
-  hapticNotify('success');
-  closeModal('modal-import');
+  lastTotalShown = null;
+  hapticNotify('warning');
   refreshAfterDataChange();
-  toast('Добавлено операций: ' + ops.length);
+  toast('Удалено операций: ' + ops.length);
 }
 
 /* ============================================================
@@ -2064,7 +2011,7 @@ function deleteAsset() {
 }
 
 /* ============================================================
-   18. ЭКСПОРТ / ИМПОРТ / СТИРАНИЕ
+   18. ЭКСПОРТ / ИМПОРТ ФАЙЛА / СТИРАНИЕ
    ============================================================ */
 
 function exportData() {
@@ -2434,11 +2381,18 @@ function bindEvents() {
   $('#as-save').addEventListener('click', saveAsset);
   $('#as-delete').addEventListener('click', deleteAsset);
 
-  /* --- Импорт через ИИ --- */
-  $('#btn-show-prompt').addEventListener('click', openPromptModal);
-  $('#btn-copy-prompt').addEventListener('click', copyPromptToClipboard);
-  $('#btn-paste-import').addEventListener('click', openImportModal);
-  $('#btn-do-import').addEventListener('click', doImport);
+  /* --- Массовое удаление --- */
+  document.querySelectorAll('#bulk-scope .seg-btn').forEach(b =>
+    b.addEventListener('click', () => {
+      bdSt.scope = b.dataset.bscope;
+      hapticSelect();
+      renderBulkDelete();
+    }));
+  $('#bulk-period').addEventListener('change', e => {
+    bdSt.period = e.target.value;
+    renderBulkDelete();
+  });
+  $('#btn-bulk-delete').addEventListener('click', bulkDelete);
 
   /* --- Настройки --- */
   $('#btn-export').addEventListener('click', exportData);
